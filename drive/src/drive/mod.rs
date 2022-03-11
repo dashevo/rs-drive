@@ -1328,12 +1328,14 @@ impl Drive {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{json_document_to_cbor, setup_contract};
+    use crate::common::{json_document_to_cbor, setup_contract, value_to_cbor};
     use crate::contract::{Contract, Document};
     use crate::drive::Drive;
     use crate::query::DriveQuery;
     use rand::Rng;
     use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
     use tempdir::TempDir;
 
     fn setup_dashpay(prefix: &str, mutable_contact_requests: bool) -> (Drive, Vec<u8>) {
@@ -2667,6 +2669,67 @@ mod tests {
         drive
             .apply_contract(updated_contract_cbor, 0f64, None)
             .expect("should update initial contract");
+    }
+
+    #[test]
+    fn test_building_index_with_long_string() {
+        let tmp_dir = TempDir::new("long_values").unwrap();
+        let mut drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
+
+        drive
+            .create_root_tree(None)
+            .expect("expected to create root tree successfully");
+
+        let contract_id = "AcYUCSvAmUwryNsQqkqqD1o3BnFuzepGtR3Mhh2swLk6";
+        let document_type_name = "test";
+
+        let contract_json = json!({
+            "$id": contract_id,
+            "documents": {
+                document_type_name: {
+                    "indices": [
+                        { "properties": [{  "longString": "asc" }] },
+                    ],
+                    "properties": {
+                        "longString": {
+                            "type": "string",
+                            "maxLength": 1024,
+                        }
+                    },
+                    "required": ["longString"],
+                    "additionalProperties": false,
+                },
+            },
+        });
+
+        let contract_cbor = value_to_cbor(contract_json, Some(1));
+
+        drive
+            .apply_contract(contract_cbor.clone(), None)
+            .expect("expected to apply contract successfully");
+
+        let long_string = String::from("x").repeat(300);
+
+        let document_json = json!({
+              "$dataContractId": contract_id,
+              "$id": "AYjYxDqLy2hvGQADqE6FAkBnQEpJSzNd3CRw1tpS6vZ7",
+              "$ownerId": "AYjYxDqLy2hvGQADqE6FAkBnQEpJSzNd3CRw1tpS6vZ7",
+              "$type": document_type_name,
+              "longString": long_string
+        });
+
+        let document_cbor = value_to_cbor(document_json, Some(1));
+
+        drive
+            .add_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                contract_cbor.as_slice(),
+                document_type_name,
+                None,
+                true,
+                None
+            )
+            .expect("expected to apply document successfully");
     }
 
     #[test]
