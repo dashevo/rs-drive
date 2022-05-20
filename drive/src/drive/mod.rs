@@ -1,8 +1,14 @@
+pub mod contract;
 pub mod defaults;
 pub mod identity;
 pub mod object_size_info;
 
 use crate::contract::{Contract, Document, DocumentType};
+use crate::drive::object_size_info::KeyValueInfo::KeyValueMaxSize;
+use crate::drive::object_size_info::PathKeyForDeletionElementInfo;
+use crate::drive::object_size_info::PathKeyForDeletionElementInfo::{
+    PathFixedSizeKeyForDeletion, PathKeyElementSizeForDeletion, PathKeyForDeletion,
+};
 use crate::error::drive::DriveError;
 use crate::error::query::QueryError;
 use crate::error::Error;
@@ -31,6 +37,8 @@ use std::sync::Arc;
 pub struct Drive {
     pub grove: GroveDb,
     pub cached_contracts: RefCell<Cache<[u8; 32], Arc<Contract>>>, //HashMap<[u8; 32], Rc<Contract>>>,
+                                                                   // pub transient_inserts: RefCell<BTreeSet<Vec<Vec<u8>>>>,
+                                                                   // pub transient_batch_inserts: RefCell<BTreeSet<Vec<Vec<u8>>>>,
 }
 
 #[repr(u8)]
@@ -65,33 +73,6 @@ impl From<RootTree> for &'static [u8; 1] {
             RootTree::Misc => &[3],
         }
     }
-}
-
-fn contract_root_path(contract_id: &[u8]) -> [&[u8]; 2] {
-    [
-        Into::<&[u8; 1]>::into(RootTree::ContractDocuments),
-        contract_id,
-    ]
-}
-
-fn contract_keeping_history_storage_path(contract_id: &[u8]) -> [&[u8]; 3] {
-    [
-        Into::<&[u8; 1]>::into(RootTree::ContractDocuments),
-        contract_id,
-        &[0],
-    ]
-}
-
-fn contract_keeping_history_storage_time_reference_path(
-    contract_id: &[u8],
-    encoded_time: Vec<u8>,
-) -> Vec<Vec<u8>> {
-    vec![
-        Into::<&[u8; 1]>::into(RootTree::ContractDocuments).to_vec(),
-        contract_id.to_vec(),
-        vec![0],
-        encoded_time,
-    ]
 }
 
 fn contract_documents_path(contract_id: &[u8]) -> [&[u8]; 3] {
@@ -179,6 +160,7 @@ impl Drive {
                 grove,
                 cached_contracts: RefCell::new(Cache::new(200)),
             }),
+
             Err(e) => Err(Error::GroveDB(e)),
         }
     }
@@ -242,12 +224,14 @@ impl Drive {
         match key_info {
             KeyInfo::KeyRef(key) => {
                 insert_operations.push(InsertOperation::for_empty_tree(key.len()));
+
                 self.grove
                     .insert(path, key, Element::empty_tree(), transaction)
                     .map_err(Error::GroveDB)
             }
             KeyInfo::KeySize(key_max_length) => {
-                insert_operations.push(InsertOperation::for_empty_tree(key_max_length));
+                insert_operations.push(InsertOperation::for_empty_tree(key_max_length)); //32
+
                 Ok(())
             }
             KeyInfo::Key(_) => Err(Error::Drive(DriveError::GroveDBInsertion(
@@ -266,52 +250,64 @@ impl Drive {
         match path_key_info {
             PathKeyInfo::PathKeyRef((path, key)) => {
                 let path = path.iter().map(|x| x.as_slice());
+
                 let inserted = self.grove.insert_if_not_exists(
                     path.clone(),
                     key,
                     Element::empty_tree(),
                     transaction,
                 )?;
+
                 if inserted {
                     insert_operations.push(InsertOperation::for_empty_tree(key.len()));
                 }
+
                 query_operations.push(QueryOperation::for_key_check_in_path(key.len(), path));
+
                 Ok(inserted)
             }
-            PathKeyInfo::PathKeySize((path_max_length, key_max_length)) => {
-                insert_operations.push(InsertOperation::for_empty_tree(key_max_length));
+            PathKeyInfo::PathKeySize((path_length, key_length)) => {
+                insert_operations.push(InsertOperation::for_empty_tree(key_length));
                 query_operations.push(QueryOperation::for_key_check_with_path_length(
-                    key_max_length,
-                    path_max_length,
+                    key_length,
+                    path_length,
                 ));
                 Ok(true)
             }
             PathKeyInfo::PathKey((path, key)) => {
                 let path = path.iter().map(|x| x.as_slice());
+
                 let inserted = self.grove.insert_if_not_exists(
                     path.clone(),
                     key.as_slice(),
                     Element::empty_tree(),
                     transaction,
                 )?;
+
                 if inserted {
                     insert_operations.push(InsertOperation::for_empty_tree(key.len()));
                 }
+
                 query_operations.push(QueryOperation::for_key_check_in_path(key.len(), path));
+
                 Ok(inserted)
             }
             PathKeyInfo::PathFixedSizeKey((path, key)) => {
                 let path = path.into_iter();
+
                 let inserted = self.grove.insert_if_not_exists(
                     path.clone(),
                     key.as_slice(),
                     Element::empty_tree(),
                     transaction,
                 )?;
+
                 if inserted {
                     insert_operations.push(InsertOperation::for_empty_tree(key.len()));
                 }
+
                 query_operations.push(QueryOperation::for_key_check_in_path(key.len(), path));
+
                 Ok(inserted)
             }
             PathKeyInfo::PathFixedSizeKeyRef((path, key)) => {
@@ -322,10 +318,13 @@ impl Drive {
                     Element::empty_tree(),
                     transaction,
                 )?;
+
                 if inserted {
                     insert_operations.push(InsertOperation::for_empty_tree(key.len()));
                 }
+
                 query_operations.push(QueryOperation::for_key_check_in_path(key.len(), path));
+
                 Ok(inserted)
             }
         }
@@ -341,9 +340,12 @@ impl Drive {
             PathKeyElement((path, key, element)) => {
                 let path = path.iter().map(|x| x.as_slice());
                 insert_operations.push(InsertOperation::for_key_value(key.len(), &element));
+
                 self.grove
                     .insert(path, key, element, transaction)
-                    .map_err(Error::GroveDB)
+                    .map_err(Error::GroveDB)?;
+
+                Ok(())
             }
             PathKeyElementSize((_path_max_length, key_max_length, element_max_size)) => {
                 insert_operations.push(InsertOperation::for_key_value_size(
@@ -354,9 +356,12 @@ impl Drive {
             }
             PathFixedSizeKeyElement((path, key, element)) => {
                 insert_operations.push(InsertOperation::for_key_value(key.len(), &element));
+
                 self.grove
                     .insert(path, key, element, transaction)
-                    .map_err(Error::GroveDB)
+                    .map_err(Error::GroveDB)?;
+
+                Ok(())
             }
         }
     }
@@ -374,13 +379,17 @@ impl Drive {
                 let insert_operation = InsertOperation::for_key_value(key.len(), &element);
                 let query_operation =
                     QueryOperation::for_key_check_in_path(key.len(), path_iter.clone());
+
                 let inserted =
                     self.grove
                         .insert_if_not_exists(path_iter, key, element, transaction)?;
+
                 if inserted {
                     insert_operations.push(insert_operation);
                 }
+
                 query_operations.push(query_operation);
+
                 Ok(inserted)
             }
             PathKeyElementSize((path_size, key_max_length, element_max_size)) => {
@@ -392,18 +401,22 @@ impl Drive {
                 query_operations.push(query_operation);
                 Ok(true)
             }
-            PathKeyElementInfo::PathFixedSizeKeyElement((path, key, element)) => {
+            PathFixedSizeKeyElement((path, key, element)) => {
                 let path_iter = path.into_iter();
                 let insert_operation = InsertOperation::for_key_value(key.len(), &element);
                 let query_operation =
                     QueryOperation::for_key_check_in_path(key.len(), path_iter.clone());
+
                 let inserted =
                     self.grove
                         .insert_if_not_exists(path_iter, key, element, transaction)?;
+
                 if inserted {
                     insert_operations.push(insert_operation);
                 }
+
                 query_operations.push(query_operation);
+
                 Ok(inserted)
             }
         }
@@ -440,380 +453,87 @@ impl Drive {
         }
     }
 
-    fn add_contract_to_storage(
-        &self,
-        contract_bytes: Element,
-        contract: &Contract,
-        block_time: f64,
+    fn grove_delete<'a, const N: usize>(
+        &'a self,
+        path_key_element_info: PathKeyForDeletionElementInfo<N>,
         transaction: TransactionArg,
-        insert_operations: &mut Vec<InsertOperation>,
+        delete_operations: &mut Vec<DeleteOperation>,
     ) -> Result<(), Error> {
-        let contract_root_path = contract_root_path(&contract.id);
-        if contract.keeps_history {
-            self.grove_insert_empty_tree(
-                contract_root_path,
-                KeyRef(&[0]),
-                transaction,
-                insert_operations,
-            )?;
-            let encoded_time = crate::contract::types::encode_float(block_time)?;
-            let contract_keeping_history_storage_path =
-                contract_keeping_history_storage_path(&contract.id);
-            self.grove_insert(
-                PathFixedSizeKeyElement((
-                    contract_keeping_history_storage_path,
-                    encoded_time.as_slice(),
-                    contract_bytes,
-                )),
-                transaction,
-                insert_operations,
-            )?;
+        match path_key_element_info {
+            PathFixedSizeKeyForDeletion((path, key)) => {
+                self.grove
+                    .delete(path, key, transaction)
+                    .map_err(Error::GroveDB)?;
 
-            // we should also insert a reference at 0 to the current value
-            let contract_storage_path =
-                contract_keeping_history_storage_time_reference_path(&contract.id, encoded_time);
-            self.grove_insert(
-                PathFixedSizeKeyElement((
-                    contract_keeping_history_storage_path,
-                    &[0],
-                    Element::Reference(contract_storage_path),
-                )),
-                transaction,
-                insert_operations,
-            )?;
-        } else {
-            // the contract is just stored at key 0
-            self.grove_insert(
-                PathFixedSizeKeyElement((contract_root_path, &[0], contract_bytes)),
-                transaction,
-                insert_operations,
-            )?;
-        }
-        Ok(())
-    }
+                let delete_operation = DeleteOperation::for_key_value_size(key.len(), 0, 1);
 
-    fn insert_contract(
-        &self,
-        contract_bytes: Element,
-        contract: &Contract,
-        block_time: f64,
-        transaction: TransactionArg,
-        insert_operations: &mut Vec<InsertOperation>,
-    ) -> Result<(), Error> {
-        self.grove_insert_empty_tree(
-            [Into::<&[u8; 1]>::into(RootTree::ContractDocuments).as_slice()],
-            KeyRef(contract.id.as_slice()),
-            transaction,
-            insert_operations,
-        )?;
+                delete_operations.push(delete_operation);
+            }
 
-        self.add_contract_to_storage(
-            contract_bytes,
-            contract,
-            block_time,
-            transaction,
-            insert_operations,
-        )?;
+            PathKeyForDeletion((path, key)) => {
+                let path: Vec<&[u8]> = path.iter().map(|i| i.as_slice()).collect();
 
-        // the documents
-        let contract_root_path = contract_root_path(&contract.id);
-        self.grove_insert_empty_tree(
-            contract_root_path,
-            KeyRef(&[1]),
-            transaction,
-            insert_operations,
-        )?;
+                self.grove
+                    .delete(path, key, transaction)
+                    .map_err(Error::GroveDB)?;
 
-        // next we should store each document type
-        // right now we are referring them by name
-        // toDo: change this to be a reference by index
-        let contract_documents_path = contract_documents_path(&contract.id);
+                let delete_operation = DeleteOperation::for_key_value_size(key.len(), 0, 1);
 
-        for (type_key, document_type) in &contract.document_types {
-            self.grove_insert_empty_tree(
-                contract_documents_path,
-                KeyRef(type_key.as_bytes()),
-                transaction,
-                insert_operations,
-            )?;
+                delete_operations.push(delete_operation);
+            }
 
-            let type_path = [
-                contract_documents_path[0],
-                contract_documents_path[1],
-                contract_documents_path[2],
-                type_key.as_bytes(),
-            ];
+            PathKeyElementSizeForDeletion((_, key_size, value_size)) => {
+                // Predicted fee should be higher than actual so we assume that we didn't fee any space
+                let delete_operation =
+                    DeleteOperation::for_key_value_size_without_refund(key_size, value_size, 1);
 
-            // primary key tree
-            self.grove_insert_empty_tree(type_path, KeyRef(&[0]), transaction, insert_operations)?;
-
-            // for each type we should insert the indices that are top level
-            for index in document_type.top_level_indices()? {
-                // toDo: change this to be a reference by index
-                self.grove_insert_empty_tree(
-                    type_path,
-                    KeyRef(index.name.as_bytes()),
-                    transaction,
-                    insert_operations,
-                )?;
+                delete_operations.push(delete_operation);
             }
         }
 
         Ok(())
     }
 
-    fn update_contract(
-        &self,
-        contract_bytes: Element,
-        contract: &Contract,
-        original_contract: &Contract,
-        block_time: f64,
+    fn grove_delete_up_tree_while_empty<'a, const N: usize>(
+        &'a self,
+        path_key_element_info: PathKeyForDeletionElementInfo<N>,
+        stop_path_height: Option<u16>,
         transaction: TransactionArg,
-        query_operations: &mut Vec<QueryOperation>,
-        insert_operations: &mut Vec<InsertOperation>,
+        delete_operations: &mut Vec<DeleteOperation>,
     ) -> Result<(), Error> {
-        if original_contract.readonly {
-            return Err(Error::Drive(DriveError::UpdatingReadOnlyImmutableContract(
-                "contract is readonly",
-            )));
-        }
+        match path_key_element_info {
+            PathFixedSizeKeyForDeletion((path, key)) => {
+                self.grove
+                    .delete_up_tree_while_empty(path, key, stop_path_height, transaction)
+                    .map_err(Error::GroveDB)?;
 
-        if contract.readonly {
-            return Err(Error::Drive(DriveError::ChangingContractToReadOnly(
-                "contract can not be changed to readonly",
-            )));
-        }
+                let delete_operation = DeleteOperation::for_key_value_size(key.len(), 0, 1);
 
-        if contract.keeps_history ^ original_contract.keeps_history {
-            return Err(Error::Drive(DriveError::ChangingContractKeepsHistory(
-                "contract can not change whether it keeps history",
-            )));
-        }
+                delete_operations.push(delete_operation);
+            }
 
-        if contract.documents_keep_history_contract_default
-            ^ original_contract.documents_keep_history_contract_default
-        {
-            return Err(Error::Drive(
-                DriveError::ChangingContractDocumentsKeepsHistoryDefault(
-                    "contract can not change the default of whether documents keeps history",
-                ),
-            ));
-        }
+            PathKeyForDeletion((path, key)) => {
+                let path: Vec<&[u8]> = path.iter().map(|i| i.as_slice()).collect();
 
-        if contract.documents_mutable_contract_default
-            ^ original_contract.documents_mutable_contract_default
-        {
-            return Err(Error::Drive(
-                DriveError::ChangingContractDocumentsMutabilityDefault(
-                    "contract can not change the default of whether documents are mutable",
-                ),
-            ));
-        }
+                self.grove
+                    .delete_up_tree_while_empty(path, key, stop_path_height, transaction)
+                    .map_err(Error::GroveDB)?;
 
-        // this will override the previous contract if we do not keep history
-        self.add_contract_to_storage(
-            contract_bytes,
-            contract,
-            block_time,
-            transaction,
-            insert_operations,
-        )?;
+                let delete_operation = DeleteOperation::for_key_value_size(key.len(), 0, 1);
 
-        let contract_documents_path = contract_documents_path(&contract.id);
-        for (type_key, document_type) in &contract.document_types {
-            let original_document_type = &original_contract.document_types.get(type_key);
-            if let Some(original_document_type) = original_document_type {
-                if original_document_type.documents_mutable ^ document_type.documents_mutable {
-                    return Err(Error::Drive(DriveError::ChangingDocumentTypeMutability(
-                        "contract can not change whether a specific document type is mutable",
-                    )));
-                }
-                if original_document_type.documents_keep_history
-                    ^ document_type.documents_keep_history
-                {
-                    return Err(Error::Drive(DriveError::ChangingDocumentTypeKeepsHistory(
-                        "contract can not change whether a specific document type keeps history",
-                    )));
-                }
+                delete_operations.push(delete_operation);
+            }
 
-                let type_path = [
-                    contract_documents_path[0],
-                    contract_documents_path[1],
-                    contract_documents_path[2],
-                    type_key.as_bytes(),
-                ];
+            PathKeyElementSizeForDeletion((_, key_size, value_size)) => {
+                // Predicted fee should be higher than actual so we assume that we didn't fee any space
+                let delete_operation =
+                    DeleteOperation::for_key_value_size_without_refund(key_size, value_size, 1);
 
-                // for each type we should insert the indices that are top level
-                for index in document_type.top_level_indices()? {
-                    // toDo: we can save a little by only inserting on new indexes
-                    self.grove_insert_empty_tree_if_not_exists(
-                        PathFixedSizeKeyRef((type_path, index.name.as_bytes())),
-                        transaction,
-                        query_operations,
-                        insert_operations,
-                    )?;
-                }
-            } else {
-                // We can just insert this directly because the original document type already exists
-                self.grove_insert_empty_tree(
-                    contract_documents_path,
-                    KeyRef(type_key.as_bytes()),
-                    transaction,
-                    insert_operations,
-                )?;
-
-                let type_path = [
-                    contract_documents_path[0],
-                    contract_documents_path[1],
-                    contract_documents_path[2],
-                    type_key.as_bytes(),
-                ];
-
-                // primary key tree
-                self.grove_insert_empty_tree(
-                    type_path,
-                    KeyRef(&[0]),
-                    transaction,
-                    insert_operations,
-                )?;
-
-                // for each type we should insert the indices that are top level
-                for index in document_type.top_level_indices()? {
-                    // toDo: change this to be a reference by index
-                    self.grove_insert_empty_tree(
-                        type_path,
-                        KeyRef(index.name.as_bytes()),
-                        transaction,
-                        insert_operations,
-                    )?;
-                }
+                delete_operations.push(delete_operation);
             }
         }
 
         Ok(())
-    }
-
-    pub fn apply_contract_cbor(
-        &self,
-        contract_cbor: Vec<u8>,
-        contract_id: Option<[u8; 32]>,
-        block_time: f64,
-        transaction: TransactionArg,
-    ) -> Result<(i64, u64), Error> {
-        // first we need to deserialize the contract
-        let contract = Contract::from_cbor(&contract_cbor, contract_id)?;
-        self.apply_contract(&contract, contract_cbor, block_time, transaction)
-    }
-
-    pub fn get_contract(
-        &self,
-        contract_id: [u8; 32],
-        transaction: TransactionArg,
-    ) -> Result<Option<Arc<Contract>>, Error> {
-        let cached_contracts = self.cached_contracts.borrow();
-        match cached_contracts.get(&contract_id) {
-            None => self.fetch_contract(contract_id, transaction),
-            Some(contract) => {
-                let contract_ref = Arc::clone(&contract);
-                Ok(Some(contract_ref))
-            }
-        }
-    }
-
-    pub fn get_cached_contract(
-        &self,
-        contract_id: [u8; 32],
-    ) -> Result<Option<Arc<Contract>>, Error> {
-        let cached_contracts = self.cached_contracts.borrow();
-        match cached_contracts.get(&contract_id) {
-            None => Ok(None),
-            Some(contract) => {
-                let contract_ref = Arc::clone(&contract);
-                Ok(Some(contract_ref))
-            }
-        }
-    }
-
-    pub fn fetch_contract(
-        &self,
-        contract_id: [u8; 32],
-        transaction: TransactionArg,
-    ) -> Result<Option<Arc<Contract>>, Error> {
-        let stored_element = self
-            .grove
-            .get(contract_root_path(&contract_id), &[0], transaction)?;
-        if let Element::Item(stored_contract_bytes) = stored_element {
-            let contract = Arc::new(Contract::from_cbor(&stored_contract_bytes, None)?);
-            let cached_contracts = self.cached_contracts.borrow();
-            cached_contracts.insert(contract_id, Arc::clone(&contract));
-            Ok(Some(Arc::clone(&contract)))
-        } else {
-            Err(Error::Drive(DriveError::CorruptedContractPath(
-                "contract path did not refer to a contract element",
-            )))
-        }
-    }
-
-    pub fn apply_contract(
-        &self,
-        contract: &Contract,
-        contract_serialization: Vec<u8>,
-        block_time: f64,
-        transaction: TransactionArg,
-    ) -> Result<(i64, u64), Error> {
-        let mut query_operations: Vec<QueryOperation> = vec![];
-        let mut insert_operations: Vec<InsertOperation> = vec![];
-
-        // overlying structure
-        let mut already_exists = false;
-        let mut original_contract_stored_data = vec![];
-
-        if let Ok(Some(stored_element)) = self.grove_get(
-            contract_root_path(&contract.id),
-            KeyRefRequest(&[0]),
-            transaction,
-            &mut query_operations,
-        ) {
-            already_exists = true;
-            match stored_element {
-                Element::Item(stored_contract_bytes) => {
-                    if contract_serialization != stored_contract_bytes {
-                        original_contract_stored_data = stored_contract_bytes;
-                    }
-                }
-                _ => {
-                    already_exists = false;
-                }
-            }
-        };
-
-        let contract_element = Element::Item(contract_serialization);
-
-        if already_exists {
-            if !original_contract_stored_data.is_empty() {
-                let original_contract = Contract::from_cbor(&original_contract_stored_data, None)?;
-                // if the contract is not mutable update_contract will return an error
-                self.update_contract(
-                    contract_element,
-                    contract,
-                    &original_contract,
-                    block_time,
-                    transaction,
-                    &mut query_operations,
-                    &mut insert_operations,
-                )?;
-            }
-        } else {
-            self.insert_contract(
-                contract_element,
-                contract,
-                block_time,
-                transaction,
-                &mut insert_operations,
-            )?;
-        }
-        let fees = calculate_fee(None, Some(query_operations), Some(insert_operations), None)?;
-        Ok(fees)
     }
 
     // If a document isn't sent to this function then we are just calling to know the query and
@@ -854,6 +574,7 @@ impl Drive {
             let encoded_time = crate::contract::types::encode_float(block_time)?;
             let path_key_element_info = match document_and_contract_info.document_info {
                 DocumentAndSerialization((document, document_cbor)) => {
+                    let element = Element::Item(Vec::from(document_cbor));
                     let document_id_in_primary_path =
                         contract_documents_keeping_history_primary_key_path_for_document_id(
                             &contract.id,
@@ -863,7 +584,7 @@ impl Drive {
                     PathFixedSizeKeyElement((
                         document_id_in_primary_path,
                         encoded_time.as_slice(),
-                        Element::Item(Vec::from(document_cbor)),
+                        element,
                     ))
                 }
                 DocumentSize(max_size) => {
@@ -871,7 +592,11 @@ impl Drive {
                         contract_documents_keeping_history_primary_key_path_for_document_id_size(
                             document_type.name.len(),
                         );
-                    PathKeyElementSize((path_max_length, 8_usize, max_size))
+                    PathKeyElementSize((
+                        path_max_length,
+                        8_usize,
+                        Element::required_item_space(max_size),
+                    ))
                 }
             };
             self.grove_insert(path_key_element_info, transaction, insert_operations)?;
@@ -908,37 +633,39 @@ impl Drive {
                     contract_documents_keeping_history_storage_time_reference_path_size(
                         document_type.name.len(),
                     );
-                PathKeyElementSize((path_max_length, 1, reference_max_size))
+                PathKeyElementSize((
+                    path_max_length,
+                    1,
+                    Element::required_item_space(reference_max_size),
+                ))
             };
 
             self.grove_insert(path_key_element_info, transaction, insert_operations)?;
         } else if insert_without_check {
             let path_key_element_info = match document_and_contract_info.document_info {
-                DocumentAndSerialization((document, document_cbor)) => PathFixedSizeKeyElement((
-                    primary_key_path,
-                    document.id.as_slice(),
-                    Element::Item(Vec::from(document_cbor)),
-                )),
+                DocumentAndSerialization((document, document_cbor)) => {
+                    let element = Element::Item(Vec::from(document_cbor));
+                    PathFixedSizeKeyElement((primary_key_path, document.id.as_slice(), element))
+                }
                 DocumentSize(max_size) => PathKeyElementSize((
                     crate::drive::defaults::BASE_CONTRACT_DOCUMENTS_PRIMARY_KEY_PATH
                         + document_type.name.len(),
                     DEFAULT_HASH_SIZE,
-                    max_size,
+                    Element::required_item_space(max_size),
                 )),
             };
             self.grove_insert(path_key_element_info, transaction, insert_operations)?;
         } else {
             let path_key_element_info = match document_and_contract_info.document_info {
-                DocumentAndSerialization((document, document_cbor)) => PathFixedSizeKeyElement((
-                    primary_key_path,
-                    document.id.as_slice(),
-                    Element::Item(Vec::from(document_cbor)),
-                )),
+                DocumentAndSerialization((document, document_cbor)) => {
+                    let element = Element::Item(Vec::from(document_cbor));
+                    PathFixedSizeKeyElement((primary_key_path, document.id.as_slice(), element))
+                }
                 DocumentSize(max_size) => PathKeyElementSize((
                     crate::drive::defaults::BASE_CONTRACT_DOCUMENTS_PRIMARY_KEY_PATH
                         + document_type.name.len(),
                     DEFAULT_HASH_SIZE,
-                    max_size,
+                    Element::required_item_space(max_size),
                 )),
             };
             let inserted = self.grove_insert_if_not_exists(
@@ -968,13 +695,19 @@ impl Drive {
         owner_id: Option<&[u8]>,
         override_document: bool,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let contract = Contract::from_cbor(contract_cbor, None)?;
 
         let document = Document::from_cbor(document_cbor, None, owner_id)?;
 
-        let document_info = DocumentAndSerialization((&document, document_cbor));
+        let document_info = if apply {
+            DocumentAndSerialization((&document, document_cbor))
+        } else {
+            let element_size = Element::Item(document_cbor.to_vec()).serialized_byte_size();
+            DocumentSize(element_size)
+        };
 
         let document_type = contract.document_type_for_name(document_type_name)?;
 
@@ -987,6 +720,7 @@ impl Drive {
             },
             override_document,
             block_time,
+            apply,
             transaction,
         )
     }
@@ -999,11 +733,17 @@ impl Drive {
         owner_id: Option<&[u8]>,
         override_document: bool,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let document = Document::from_cbor(document_cbor, None, owner_id)?;
 
-        let document_info = DocumentAndSerialization((&document, document_cbor));
+        let document_info = if apply {
+            DocumentAndSerialization((&document, document_cbor))
+        } else {
+            let element_size = Element::Item(document_cbor.to_vec()).serialized_byte_size();
+            DocumentSize(element_size)
+        };
 
         let document_type = contract.document_type_for_name(document_type_name)?;
 
@@ -1016,6 +756,7 @@ impl Drive {
             },
             override_document,
             block_time,
+            apply,
             transaction,
         )
     }
@@ -1025,6 +766,7 @@ impl Drive {
         document_and_contract_info: DocumentAndContractInfo,
         override_document: bool,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let mut query_operations: Vec<QueryOperation> = vec![];
@@ -1033,11 +775,14 @@ impl Drive {
             document_and_contract_info,
             override_document,
             block_time,
+            apply,
             transaction,
             &mut query_operations,
             &mut insert_operations,
         )?;
+
         let fees = calculate_fee(None, Some(query_operations), Some(insert_operations), None)?;
+
         Ok(fees)
     }
 
@@ -1046,6 +791,7 @@ impl Drive {
         document_and_contract_info: DocumentAndContractInfo,
         override_document: bool,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
         query_operations: &mut Vec<QueryOperation>,
         insert_operations: &mut Vec<InsertOperation>,
@@ -1080,6 +826,7 @@ impl Drive {
             self.update_document_for_contract_operations(
                 document_and_contract_info,
                 block_time,
+                apply,
                 transaction,
                 query_operations,
                 insert_operations,
@@ -1090,7 +837,7 @@ impl Drive {
             self.add_document_to_primary_storage(
                 &document_and_contract_info,
                 block_time,
-                override_document,
+                true, // we don't need this check because we have it already during validation
                 transaction,
                 query_operations,
                 insert_operations,
@@ -1244,7 +991,9 @@ impl Drive {
                         );
                         KeyElement((document.id.as_slice(), document_reference))
                     }
-                    DocumentSize(max_size) => KeyElementSize((8_usize, *max_size)),
+                    DocumentSize(max_size) => {
+                        KeyElementSize((DEFAULT_HASH_SIZE, Element::required_item_space(*max_size)))
+                    }
                 };
 
                 let path_key_element_info = PathKeyElementInfo::from_path_info_and_key_element(
@@ -1264,7 +1013,9 @@ impl Drive {
                         );
                         KeyElement((&[0], document_reference))
                     }
-                    DocumentSize(max_size) => KeyElementSize((1, *max_size)),
+                    DocumentSize(max_size) => {
+                        KeyElementSize((1, Element::required_item_space(*max_size)))
+                    }
                 };
 
                 let path_key_element_info = PathKeyElementInfo::from_path_info_and_key_element(
@@ -1286,6 +1037,7 @@ impl Drive {
                 }
             }
         }
+
         Ok(())
     }
 
@@ -1296,6 +1048,7 @@ impl Drive {
         document_type: &str,
         owner_id: Option<&[u8]>,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let contract = Contract::from_cbor(contract_cbor, None)?;
@@ -1309,6 +1062,7 @@ impl Drive {
             document_type,
             owner_id,
             block_time,
+            apply,
             transaction,
         )
     }
@@ -1320,6 +1074,7 @@ impl Drive {
         document_type: &str,
         owner_id: Option<&[u8]>,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let document = Document::from_cbor(document_cbor, None, owner_id)?;
@@ -1331,6 +1086,7 @@ impl Drive {
             document_type,
             owner_id,
             block_time,
+            apply,
             transaction,
         )
     }
@@ -1343,6 +1099,7 @@ impl Drive {
         document_type_name: &str,
         owner_id: Option<&[u8]>,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let mut query_operations: Vec<QueryOperation> = vec![];
@@ -1350,19 +1107,30 @@ impl Drive {
 
         let document_type = contract.document_type_for_name(document_type_name)?;
 
+        let document_info = if apply {
+            DocumentInfo::DocumentAndSerialization((document, document_cbor))
+        } else {
+            let element_size = Element::Item(document_cbor.to_vec()).serialized_byte_size();
+
+            DocumentInfo::DocumentSize(element_size)
+        };
+
         self.update_document_for_contract_operations(
             DocumentAndContractInfo {
-                document_info: DocumentInfo::DocumentAndSerialization((document, document_cbor)),
+                document_info,
                 contract,
                 document_type,
                 owner_id,
             },
             block_time,
+            apply,
             transaction,
             &mut query_operations,
             &mut insert_operations,
         )?;
+
         let fees = calculate_fee(None, Some(query_operations), Some(insert_operations), None)?;
+
         Ok(fees)
     }
 
@@ -1370,6 +1138,7 @@ impl Drive {
         &self,
         document_and_contract_info: DocumentAndContractInfo,
         block_time: f64,
+        apply: bool,
         transaction: TransactionArg,
         query_operations: &mut Vec<QueryOperation>,
         insert_operations: &mut Vec<InsertOperation>,
@@ -1389,6 +1158,7 @@ impl Drive {
                 document_and_contract_info,
                 false,
                 block_time,
+                apply,
                 transaction,
                 query_operations,
                 insert_operations,
@@ -1507,9 +1277,9 @@ impl Drive {
                     )?
                     .unwrap_or_default();
 
-                let mut change_occured_on_index = document_top_field != old_document_top_field;
+                let mut change_occurred_on_index = document_top_field != old_document_top_field;
 
-                if change_occured_on_index {
+                if change_occurred_on_index {
                     // here we are inserting an empty tree that will have a subtree of all other index properties
                     self.grove_insert_empty_tree_if_not_exists(
                         PathKeyInfo::PathKeyRef::<0>((
@@ -1554,9 +1324,9 @@ impl Drive {
                         )?
                         .unwrap_or_default();
 
-                    change_occured_on_index |= document_index_field != old_document_index_field;
+                    change_occurred_on_index |= document_index_field != old_document_index_field;
 
-                    if change_occured_on_index {
+                    if change_occurred_on_index {
                         // here we are inserting an empty tree that will have a subtree of all other index properties
                         self.grove_insert_empty_tree_if_not_exists(
                             PathKeyInfo::PathKeyRef::<0>((
@@ -1575,7 +1345,7 @@ impl Drive {
                     // Iteration 1. the index path is now something like Contracts/ContractID/Documents(1)/$ownerId/<ownerId>/toUserId
                     // Iteration 2. the index path is now something like Contracts/ContractID/Documents(1)/$ownerId/<ownerId>/toUserId/<ToUserId>/accountReference
 
-                    if change_occured_on_index {
+                    if change_occurred_on_index {
                         // here we are inserting an empty tree that will have a subtree of all other index properties
                         self.grove_insert_empty_tree_if_not_exists(
                             PathKeyInfo::PathKeyRef::<0>((
@@ -1597,7 +1367,7 @@ impl Drive {
                     // Iteration 2. the index path is now something like Contracts/ContractID/Documents(1)/$ownerId/<ownerId>/toUserId/<ToUserId>/accountReference/<accountReference>
                 }
 
-                if change_occured_on_index {
+                if change_occurred_on_index {
                     // we first need to delete the old values
                     // unique indexes will be stored under key "0"
                     // non unique indices should have a tree at key "0" that has all elements based off of primary key
@@ -1666,6 +1436,7 @@ impl Drive {
                 }
             }
         }
+
         Ok(())
     }
 
@@ -1675,6 +1446,7 @@ impl Drive {
         contract: &Contract,
         document_type_name: &str,
         owner_id: Option<&[u8]>,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let mut query_operations: Vec<QueryOperation> = vec![];
@@ -1684,6 +1456,7 @@ impl Drive {
             contract,
             document_type_name,
             owner_id,
+            apply,
             transaction,
             &mut query_operations,
             &mut delete_operations,
@@ -1698,6 +1471,7 @@ impl Drive {
         contract_cbor: &[u8],
         document_type_name: &str,
         owner_id: Option<&[u8]>,
+        apply: bool,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let contract = Contract::from_cbor(contract_cbor, None)?;
@@ -1706,6 +1480,7 @@ impl Drive {
             &contract,
             document_type_name,
             owner_id,
+            apply,
             transaction,
         )
     }
@@ -1716,6 +1491,7 @@ impl Drive {
         contract: &Contract,
         document_type_name: &str,
         owner_id: Option<&[u8]>,
+        apply: bool,
         transaction: TransactionArg,
         query_operations: &mut Vec<QueryOperation>,
         delete_operations: &mut Vec<DeleteOperation>,
@@ -1736,33 +1512,45 @@ impl Drive {
         let contract_documents_primary_key_path =
             contract_documents_primary_key_path(&contract.id, document_type_name);
 
+        let key_value_info = if apply {
+            KeyRefRequest(document_id)
+        } else {
+            KeyValueMaxSize((document_id.len(), document_type.max_size()))
+        };
+
         // next we need to get the document from storage
         let document_element: Option<Element> = self.grove_get(
             contract_documents_primary_key_path,
-            KeyRefRequest(document_id),
+            key_value_info,
             transaction,
             query_operations,
         )?;
 
-        if document_element.is_none() {
-            return Err(Error::Drive(DriveError::DeletingDocumentThatDoesNotExist(
-                "document being deleted does not exist",
-            )));
-        }
+        let document = if apply {
+            if document_element.is_none() {
+                return Err(Error::Drive(DriveError::DeletingDocumentThatDoesNotExist(
+                    "document being deleted does not exist",
+                )));
+            }
 
-        let document_bytes: Vec<u8> = match document_element.unwrap() {
-            Element::Item(data) => data,
-            _ => todo!(), // TODO: how should this be handled, possibility that document might not be in storage
+            let document_bytes: Vec<u8> = match document_element.unwrap() {
+                Element::Item(data) => data,
+                _ => todo!(), // TODO: how should this be handled, possibility that document might not be in storage
+            };
+
+            Document::from_cbor(document_bytes.as_slice(), None, owner_id)?
+        } else {
+            document_type.random_document(None)
         };
 
-        let document = Document::from_cbor(document_bytes.as_slice(), None, owner_id)?;
+        let path_key_element_info = if apply {
+            PathFixedSizeKeyForDeletion((contract_documents_primary_key_path, document_id))
+        } else {
+            PathKeyElementSizeForDeletion((0, document_id.len(), document_type.max_size()))
+        };
 
         // third we need to delete the document for it's primary key
-        self.grove.delete(
-            contract_documents_primary_key_path,
-            document_id,
-            transaction,
-        )?;
+        self.grove_delete(path_key_element_info, transaction, delete_operations)?;
 
         let contract_document_type_path =
             contract_document_type_path(&contract.id, document_type_name);
@@ -1777,9 +1565,11 @@ impl Drive {
                 .iter()
                 .map(|&x| Vec::from(x))
                 .collect();
+
             let top_index_property = index.properties.get(0).ok_or(Error::Drive(
                 DriveError::CorruptedContractIndexes("invalid contract indices"),
             ))?;
+
             index_path.push(Vec::from(top_index_property.name.as_bytes()));
 
             // with the example of the dashpay contract's first index
@@ -1823,32 +1613,31 @@ impl Drive {
 
             // unique indexes will be stored under key "0"
             // non unique indices should have a tree at key "0" that has all elements based off of primary key
-            if !index.unique {
+            let path_key_element_info = if !index.unique {
                 index_path.push(vec![0]);
 
-                let index_path_slices: Vec<&[u8]> =
-                    index_path.iter().map(|x| x.as_slice()).collect();
-
-                // here we should return an error if the element already exists
-                self.grove.delete_up_tree_while_empty(
-                    index_path_slices,
-                    document_id,
-                    Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
-                    transaction,
-                )?;
+                if apply {
+                    // This type is not using const N so it can be 0
+                    PathKeyForDeletion::<0>((index_path, document_id))
+                } else {
+                    PathKeyElementSizeForDeletion((index_path.len(), document_id.len(), 0))
+                }
             } else {
-                let index_path_slices: Vec<&[u8]> =
-                    index_path.iter().map(|x| x.as_slice()).collect();
+                if apply {
+                    PathKeyForDeletion((index_path, &[0]))
+                } else {
+                    PathKeyElementSizeForDeletion((index_path.len(), 1, 0))
+                }
+            };
 
-                // here we should return an error if the element already exists
-                self.grove.delete_up_tree_while_empty(
-                    index_path_slices,
-                    &[0],
-                    Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
-                    transaction,
-                )?;
-            }
+            self.grove_delete_up_tree_while_empty(
+                path_key_element_info,
+                Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
+                transaction,
+                delete_operations,
+            )?;
         }
+
         Ok(())
     }
 
@@ -1909,6 +1698,7 @@ impl Drive {
             },
             false,
             0.0,
+            false,
             None,
         )
     }
@@ -1921,8 +1711,10 @@ mod tests {
         value_to_cbor,
     };
     use crate::contract::{Contract, Document};
+    use crate::drive::object_size_info::DocumentInfo::DocumentAndSerialization;
     use crate::drive::object_size_info::{DocumentAndContractInfo, DocumentInfo};
     use crate::drive::{defaults, Drive};
+    use crate::fee::op::{InsertOperation, QueryOperation};
     use crate::query::DriveQuery;
     use rand::Rng;
     use serde_json::json;
@@ -1948,52 +1740,10 @@ mod tests {
         // let's construct the grovedb structure for the dashpay data contract
         let dashpay_cbor = json_document_to_cbor(dashpay_path, Some(1));
         drive
-            .apply_contract_cbor(dashpay_cbor.clone(), None, 0f64, None)
+            .apply_contract_cbor(dashpay_cbor.clone(), None, 0f64, true, None)
             .expect("expected to apply contract successfully");
 
         (drive, dashpay_cbor)
-    }
-
-    fn setup_deep_nested_contract() -> (Drive, Contract, Vec<u8>) {
-        // Todo: make TempDir based on _prefix
-        let tmp_dir = TempDir::new().unwrap();
-        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
-
-        drive
-            .create_root_tree(None)
-            .expect("expected to create root tree successfully");
-
-        let contract_path = "tests/supporting_files/contract/deepNested/deep-nested50.json";
-        // let's construct the grovedb structure for the dashpay data contract
-        let contract_cbor = json_document_to_cbor(contract_path, Some(1));
-        let contract = Contract::from_cbor(&contract_cbor, None)
-            .expect("expected to deserialize the contract");
-        drive
-            .apply_contract(&contract, contract_cbor.clone(), 0f64, None)
-            .expect("expected to apply contract successfully");
-
-        (drive, contract, contract_cbor)
-    }
-
-    fn setup_reference_contract() -> (Drive, Contract, Vec<u8>) {
-        let tmp_dir = TempDir::new().unwrap();
-        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
-
-        drive
-            .create_root_tree(None)
-            .expect("expected to create root tree successfully");
-
-        let contract_path = "tests/supporting_files/contract/references/references.json";
-
-        // let's construct the grovedb structure for the dashpay data contract
-        let contract_cbor = json_document_to_cbor(contract_path, Some(1));
-        let contract = Contract::from_cbor(&contract_cbor, None)
-            .expect("expected to deserialize the contract");
-        drive
-            .apply_contract(&contract, contract_cbor.clone(), 0f64, None)
-            .expect("expected to apply contract successfully");
-
-        (drive, contract, contract_cbor)
     }
 
     #[test]
@@ -2014,6 +1764,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -2026,6 +1777,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect_err("expected not to be able to insert same document twice");
@@ -2038,6 +1790,7 @@ mod tests {
                 Some(&random_owner_id),
                 true,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to override a document successfully");
@@ -2075,6 +1828,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2087,6 +1841,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect_err("expected not to be able to insert same document twice");
@@ -2099,9 +1854,64 @@ mod tests {
                 Some(&random_owner_id),
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to override a document successfully");
+    }
+
+    #[test]
+    fn test_add_dashpay_fee_for_documents() {
+        let tmp_dir = TempDir::new().unwrap();
+        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
+
+        let db_transaction = drive.grove.start_transaction();
+
+        drive
+            .create_root_tree(Some(&db_transaction))
+            .expect("expected to create root tree successfully");
+
+        let contract = setup_contract(
+            &drive,
+            "tests/supporting_files/contract/dashpay/dashpay-contract-all-mutable.json",
+            None,
+            Some(&db_transaction),
+        );
+
+        let dashpay_cr_document_cbor = json_document_to_cbor(
+            "tests/supporting_files/contract/dashpay/contact-request0.json",
+            Some(1),
+        );
+
+        let random_owner_id = rand::thread_rng().gen::<[u8; 32]>();
+        let (predicted_storage_fee, predicted_processing_fee) = drive
+            .add_document_cbor_for_contract(
+                &dashpay_cr_document_cbor,
+                &contract,
+                "contactRequest",
+                Some(&random_owner_id),
+                false,
+                0f64,
+                false,
+                Some(&db_transaction),
+            )
+            .expect("expected to get back fee for document insertion successfully");
+
+        let (actual_storage_fee, actual_processing_fee) = drive
+            .add_document_cbor_for_contract(
+                &dashpay_cr_document_cbor,
+                &contract,
+                "contactRequest",
+                Some(&random_owner_id),
+                false,
+                0f64,
+                true,
+                Some(&db_transaction),
+            )
+            .expect("expected to insert a document successfully");
+
+        assert!(predicted_storage_fee >= actual_storage_fee);
+        assert!(predicted_processing_fee >= actual_processing_fee);
     }
 
     #[test]
@@ -2136,6 +1946,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2147,6 +1958,7 @@ mod tests {
                 "contactRequest",
                 Some(&random_owner_id),
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect_err("expected not to be able to update a non mutable document");
@@ -2159,6 +1971,7 @@ mod tests {
                 Some(&random_owner_id),
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect_err("expected not to be able to override a non mutable document");
@@ -2201,6 +2014,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2212,6 +2026,7 @@ mod tests {
                 "profile",
                 Some(&random_owner_id),
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to update a document with history successfully");
@@ -2235,6 +2050,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -2249,6 +2065,7 @@ mod tests {
                 &dashpay_cbor,
                 "profile",
                 Some(&random_owner_id),
+                true,
                 None,
             )
             .expect("expected to be able to delete the document");
@@ -2286,6 +2103,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2300,6 +2118,7 @@ mod tests {
                 &contract,
                 "profile",
                 Some(&random_owner_id),
+                false,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2349,6 +2168,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2409,6 +2229,7 @@ mod tests {
                         },
                         false,
                         0f64,
+                        true,
                         Some(&db_transaction),
                     )
                     .expect("expected to insert a document successfully");
@@ -2451,6 +2272,7 @@ mod tests {
                 &contract,
                 "niceDocument",
                 Some(&documents.get(0).unwrap().owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2520,6 +2342,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2556,6 +2379,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2619,6 +2443,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2650,6 +2475,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2681,6 +2507,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2712,6 +2539,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2777,6 +2605,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2808,6 +2637,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2839,6 +2669,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2868,6 +2699,7 @@ mod tests {
                 },
                 false,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to insert a document successfully");
@@ -2887,6 +2719,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2901,6 +2734,7 @@ mod tests {
                 &contract,
                 "person",
                 Some(&random_owner_id),
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2949,6 +2783,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -2960,6 +2795,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -2971,6 +2807,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -2999,6 +2836,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -3010,6 +2848,7 @@ mod tests {
                 Some(&random_owner_id),
                 false,
                 0f64,
+                true,
                 None,
             )
             .expect_err(
@@ -3031,7 +2870,13 @@ mod tests {
         let contract_cbor = hex::decode("01000000a5632469645820b0248cd9a27f86d05badf475dd9ff574d63219cd60c52e2be1e540c2fdd713336724736368656d61783468747470733a2f2f736368656d612e646173682e6f72672f6470702d302d342d302f6d6574612f646174612d636f6e7472616374676f776e6572496458204c9bf0db6ae315c85465e9ef26e6a006de9673731d08d14881945ddef1b5c5f26776657273696f6e0169646f63756d656e7473a267636f6e74616374a56474797065666f626a65637467696e646963657381a3646e616d656f6f6e7765724964546f55736572496466756e69717565f56a70726f7065727469657382a168246f776e6572496463617363a168746f557365724964636173636872657175697265648268746f557365724964697075626c69634b65796a70726f70657274696573a268746f557365724964a56474797065656172726179686d61784974656d731820686d696e4974656d73182069627974654172726179f570636f6e74656e744d656469615479706578216170706c69636174696f6e2f782e646173682e6470702e6964656e746966696572697075626c69634b6579a36474797065656172726179686d61784974656d73182169627974654172726179f5746164646974696f6e616c50726f70657274696573f46770726f66696c65a56474797065666f626a65637467696e646963657381a3646e616d65676f776e6572496466756e69717565f56a70726f7065727469657381a168246f776e6572496463617363687265717569726564826961766174617255726c6561626f75746a70726f70657274696573a26561626f7574a2647479706566737472696e67696d61784c656e67746818ff6961766174617255726ca3647479706566737472696e6766666f726d61746375726c696d61784c656e67746818ff746164646974696f6e616c50726f70657274696573f4").unwrap();
 
         drive
-            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, Some(&db_transaction))
+            .apply_contract_cbor(
+                contract_cbor.clone(),
+                None,
+                0f64,
+                true,
+                Some(&db_transaction),
+            )
             .expect("expected to apply contract successfully");
 
         // Create Alice profile
@@ -3046,6 +2891,7 @@ mod tests {
                 None,
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should create alice profile");
@@ -3061,6 +2907,7 @@ mod tests {
                 "profile",
                 None,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should update alice profile");
@@ -3080,7 +2927,7 @@ mod tests {
         let contract = Contract::from_cbor(contract_cbor.as_slice(), None)
             .expect("expected to create contract");
         drive
-            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, None)
+            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, true, None)
             .expect("expected to apply contract successfully");
 
         // Create Alice profile
@@ -3107,6 +2954,7 @@ mod tests {
                 },
                 true,
                 0f64,
+                true,
                 None,
             )
             .expect("should create alice profile");
@@ -3131,6 +2979,7 @@ mod tests {
                 "profile",
                 None,
                 0f64,
+                true,
                 None,
             )
             .expect("should update alice profile");
@@ -3158,7 +3007,13 @@ mod tests {
         let contract = Contract::from_cbor(contract_cbor.as_slice(), None)
             .expect("expected to create contract");
         drive
-            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, Some(&db_transaction))
+            .apply_contract_cbor(
+                contract_cbor.clone(),
+                None,
+                0f64,
+                true,
+                Some(&db_transaction),
+            )
             .expect("expected to apply contract successfully");
 
         // Create Alice profile
@@ -3185,6 +3040,7 @@ mod tests {
                 },
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should create alice profile");
@@ -3222,6 +3078,7 @@ mod tests {
                 "profile",
                 None,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should update alice profile");
@@ -3254,7 +3111,13 @@ mod tests {
         let contract = Contract::from_cbor(contract_cbor.as_slice(), None)
             .expect("expected to create contract");
         drive
-            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, Some(&db_transaction))
+            .apply_contract_cbor(
+                contract_cbor.clone(),
+                None,
+                0f64,
+                true,
+                Some(&db_transaction),
+            )
             .expect("expected to apply contract successfully");
 
         // Create Alice profile
@@ -3281,6 +3144,7 @@ mod tests {
                 },
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should create alice profile");
@@ -3313,6 +3177,7 @@ mod tests {
                 &contract,
                 "profile",
                 None,
+                true,
                 Some(&db_transaction),
             )
             .expect("expected to delete document");
@@ -3345,6 +3210,7 @@ mod tests {
                 "profile",
                 None,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should update alice profile");
@@ -3364,7 +3230,13 @@ mod tests {
         let contract_cbor = hex::decode("01000000a5632469645820e668c659af66aee1e72c186dde7b5b7e0a1d712a09c40d5721f622bf53c531556724736368656d61783468747470733a2f2f736368656d612e646173682e6f72672f6470702d302d342d302f6d6574612f646174612d636f6e7472616374676f776e6572496458203012c19b98ec0033addb36cd64b7f510670f2a351a4304b5f6994144286efdac6776657273696f6e0169646f63756d656e7473a266646f6d61696ea66474797065666f626a65637467696e646963657383a3646e616d6572706172656e744e616d65416e644c6162656c66756e69717565f56a70726f7065727469657382a1781a6e6f726d616c697a6564506172656e74446f6d61696e4e616d6563617363a16f6e6f726d616c697a65644c6162656c63617363a3646e616d656e646173684964656e74697479496466756e69717565f56a70726f7065727469657381a1781c7265636f7264732e64617368556e697175654964656e74697479496463617363a2646e616d656964617368416c6961736a70726f7065727469657381a1781b7265636f7264732e64617368416c6961734964656e746974794964636173636824636f6d6d656e74790137496e206f7264657220746f207265676973746572206120646f6d61696e20796f75206e65656420746f206372656174652061207072656f726465722e20546865207072656f726465722073746570206973206e656564656420746f2070726576656e74206d616e2d696e2d7468652d6d6964646c652061747461636b732e206e6f726d616c697a65644c6162656c202b20272e27202b206e6f726d616c697a6564506172656e74446f6d61696e206d757374206e6f74206265206c6f6e676572207468616e20323533206368617273206c656e67746820617320646566696e65642062792052464320313033352e20446f6d61696e20646f63756d656e74732061726520696d6d757461626c653a206d6f64696669636174696f6e20616e642064656c6574696f6e20617265207265737472696374656468726571756972656486656c6162656c6f6e6f726d616c697a65644c6162656c781a6e6f726d616c697a6564506172656e74446f6d61696e4e616d656c7072656f7264657253616c74677265636f7264736e737562646f6d61696e52756c65736a70726f70657274696573a6656c6162656ca5647479706566737472696e67677061747465726e782a5e5b612d7a412d5a302d395d5b612d7a412d5a302d392d5d7b302c36317d5b612d7a412d5a302d395d24696d61784c656e677468183f696d696e4c656e677468036b6465736372697074696f6e7819446f6d61696e206c6162656c2e20652e672e2027426f62272e677265636f726473a66474797065666f626a6563746824636f6d6d656e747890436f6e73747261696e742077697468206d617820616e64206d696e2070726f7065727469657320656e737572652074686174206f6e6c79206f6e65206964656e74697479207265636f72642069732075736564202d206569746865722061206064617368556e697175654964656e74697479496460206f722061206064617368416c6961734964656e746974794964606a70726f70657274696573a27364617368416c6961734964656e746974794964a764747970656561727261796824636f6d6d656e7478234d75737420626520657175616c20746f2074686520646f63756d656e74206f776e6572686d61784974656d731820686d696e4974656d73182069627974654172726179f56b6465736372697074696f6e783d4964656e7469747920494420746f206265207573656420746f2063726561746520616c696173206e616d657320666f7220746865204964656e7469747970636f6e74656e744d656469615479706578216170706c69636174696f6e2f782e646173682e6470702e6964656e7469666965727464617368556e697175654964656e746974794964a764747970656561727261796824636f6d6d656e7478234d75737420626520657175616c20746f2074686520646f63756d656e74206f776e6572686d61784974656d731820686d696e4974656d73182069627974654172726179f56b6465736372697074696f6e783e4964656e7469747920494420746f206265207573656420746f2063726561746520746865207072696d617279206e616d6520746865204964656e7469747970636f6e74656e744d656469615479706578216170706c69636174696f6e2f782e646173682e6470702e6964656e7469666965726d6d617850726f70657274696573016d6d696e50726f7065727469657301746164646974696f6e616c50726f70657274696573f46c7072656f7264657253616c74a56474797065656172726179686d61784974656d731820686d696e4974656d73182069627974654172726179f56b6465736372697074696f6e782253616c74207573656420696e20746865207072656f7264657220646f63756d656e746e737562646f6d61696e52756c6573a56474797065666f626a656374687265717569726564816f616c6c6f77537562646f6d61696e736a70726f70657274696573a16f616c6c6f77537562646f6d61696e73a3647479706567626f6f6c65616e6824636f6d6d656e74784f4f6e6c792074686520646f6d61696e206f776e657220697320616c6c6f77656420746f2063726561746520737562646f6d61696e7320666f72206e6f6e20746f702d6c6576656c20646f6d61696e736b6465736372697074696f6e785b54686973206f7074696f6e20646566696e65732077686f2063616e2063726561746520737562646f6d61696e733a2074727565202d20616e796f6e653b2066616c7365202d206f6e6c792074686520646f6d61696e206f776e65726b6465736372697074696f6e7842537562646f6d61696e2072756c657320616c6c6f7720646f6d61696e206f776e65727320746f20646566696e652072756c657320666f7220737562646f6d61696e73746164646974696f6e616c50726f70657274696573f46f6e6f726d616c697a65644c6162656ca5647479706566737472696e67677061747465726e78215e5b612d7a302d395d5b612d7a302d392d5d7b302c36317d5b612d7a302d395d246824636f6d6d656e7478694d75737420626520657175616c20746f20746865206c6162656c20696e206c6f776572636173652e20546869732070726f70657274792077696c6c20626520646570726563617465642064756520746f206361736520696e73656e73697469766520696e6469636573696d61784c656e677468183f6b6465736372697074696f6e7850446f6d61696e206c6162656c20696e206c6f7765726361736520666f7220636173652d696e73656e73697469766520756e697175656e6573732076616c69646174696f6e2e20652e672e2027626f6227781a6e6f726d616c697a6564506172656e74446f6d61696e4e616d65a6647479706566737472696e67677061747465726e78285e247c5e5b5b612d7a302d395d5b612d7a302d392d5c2e5d7b302c3138387d5b612d7a302d395d246824636f6d6d656e74788c4d7573742065697468657220626520657175616c20746f20616e206578697374696e6720646f6d61696e206f7220656d70747920746f20637265617465206120746f70206c6576656c20646f6d61696e2e204f6e6c7920746865206461746120636f6e7472616374206f776e65722063616e2063726561746520746f70206c6576656c20646f6d61696e732e696d61784c656e67746818be696d696e4c656e677468006b6465736372697074696f6e785e412066756c6c20706172656e7420646f6d61696e206e616d6520696e206c6f7765726361736520666f7220636173652d696e73656e73697469766520756e697175656e6573732076616c69646174696f6e2e20652e672e20276461736827746164646974696f6e616c50726f70657274696573f4687072656f72646572a66474797065666f626a65637467696e646963657381a3646e616d656a73616c7465644861736866756e69717565f56a70726f7065727469657381a17073616c746564446f6d61696e48617368636173636824636f6d6d656e74784a5072656f7264657220646f63756d656e74732061726520696d6d757461626c653a206d6f64696669636174696f6e20616e642064656c6574696f6e206172652072657374726963746564687265717569726564817073616c746564446f6d61696e486173686a70726f70657274696573a17073616c746564446f6d61696e48617368a56474797065656172726179686d61784974656d731820686d696e4974656d73182069627974654172726179f56b6465736372697074696f6e7859446f75626c65207368612d323536206f662074686520636f6e636174656e6174696f6e206f66206120333220627974652072616e646f6d2073616c7420616e642061206e6f726d616c697a656420646f6d61696e206e616d65746164646974696f6e616c50726f70657274696573f4").unwrap();
 
         drive
-            .apply_contract_cbor(contract_cbor.clone(), None, 0f64, Some(&db_transaction))
+            .apply_contract_cbor(
+                contract_cbor.clone(),
+                None,
+                0f64,
+                true,
+                Some(&db_transaction),
+            )
             .expect("expected to apply contract successfully");
 
         // Create dash TLD
@@ -3379,6 +3251,7 @@ mod tests {
                 None,
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should create dash tld");
@@ -3402,97 +3275,10 @@ mod tests {
                 None,
                 true,
                 0f64,
+                true,
                 Some(&db_transaction),
             )
             .expect("should add random tld");
-    }
-
-    #[test]
-    fn test_create_and_update_contract() {
-        let tmp_dir = TempDir::new().unwrap();
-        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
-
-        drive
-            .create_root_tree(None)
-            .expect("expected to create root tree successfully");
-
-        let initial_contract_cbor = hex::decode("01000000a66324696458209c2b800c5ea525d032a9fda4dda22a896f1e763af5f0e15ae7f93882b7439d77652464656673a1686c6173744e616d65a1647479706566737472696e676724736368656d61783468747470733a2f2f736368656d612e646173682e6f72672f6470702d302d342d302f6d6574612f646174612d636f6e7472616374676f776e657249645820636d3188dfffe62efb10e20347ec6c41b3e49fa31cb757ef4bad6cd8f1c7f4b66776657273696f6e0169646f63756d656e7473a76b756e697175654461746573a56474797065666f626a65637467696e646963657382a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657382a16a2463726561746564417463617363a16a2475706461746564417463617363a2646e616d6566696e646578326a70726f7065727469657381a16a2475706461746564417463617363687265717569726564836966697273744e616d656a246372656174656441746a247570646174656441746a70726f70657274696573a2686c6173744e616d65a1647479706566737472696e676966697273744e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46c6e696365446f63756d656e74a46474797065666f626a656374687265717569726564816a246372656174656441746a70726f70657274696573a1646e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46e6e6f54696d65446f63756d656e74a36474797065666f626a6563746a70726f70657274696573a1646e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46e707265747479446f63756d656e74a46474797065666f626a65637468726571756972656482686c6173744e616d656a247570646174656441746a70726f70657274696573a1686c6173744e616d65a1642472656670232f24646566732f6c6173744e616d65746164646974696f6e616c50726f70657274696573f46e7769746842797465417272617973a56474797065666f626a65637467696e646963657381a2646e616d6566696e646578316a70726f7065727469657381a16e6279746541727261794669656c6463617363687265717569726564816e6279746541727261794669656c646a70726f70657274696573a26e6279746541727261794669656c64a36474797065656172726179686d61784974656d731069627974654172726179f56f6964656e7469666965724669656c64a56474797065656172726179686d61784974656d731820686d696e4974656d73182069627974654172726179f570636f6e74656e744d656469615479706578216170706c69636174696f6e2f782e646173682e6470702e6964656e746966696572746164646974696f6e616c50726f70657274696573f46f696e6465786564446f63756d656e74a56474797065666f626a65637467696e646963657386a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657382a168246f776e6572496463617363a16966697273744e616d656464657363a3646e616d6566696e6465783266756e69717565f56a70726f7065727469657382a168246f776e6572496463617363a1686c6173744e616d656464657363a2646e616d6566696e646578336a70726f7065727469657381a1686c6173744e616d6563617363a2646e616d6566696e646578346a70726f7065727469657382a16a2463726561746564417463617363a16a2475706461746564417463617363a2646e616d6566696e646578356a70726f7065727469657381a16a2475706461746564417463617363a2646e616d6566696e646578366a70726f7065727469657381a16a2463726561746564417463617363687265717569726564846966697273744e616d656a246372656174656441746a24757064617465644174686c6173744e616d656a70726f70657274696573a2686c6173744e616d65a2647479706566737472696e67696d61784c656e6774681901006966697273744e616d65a2647479706566737472696e67696d61784c656e677468190100746164646974696f6e616c50726f70657274696573f4781d6f7074696f6e616c556e69717565496e6465786564446f63756d656e74a56474797065666f626a65637467696e646963657383a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657381a16966697273744e616d656464657363a3646e616d6566696e6465783266756e69717565f56a70726f7065727469657383a168246f776e6572496463617363a16966697273744e616d6563617363a1686c6173744e616d6563617363a3646e616d6566696e6465783366756e69717565f56a70726f7065727469657382a167636f756e74727963617363a1646369747963617363687265717569726564826966697273744e616d65686c6173744e616d656a70726f70657274696573a46463697479a2647479706566737472696e67696d61784c656e67746819010067636f756e747279a2647479706566737472696e67696d61784c656e677468190100686c6173744e616d65a2647479706566737472696e67696d61784c656e6774681901006966697273744e616d65a2647479706566737472696e67696d61784c656e677468190100746164646974696f6e616c50726f70657274696573f4").unwrap();
-
-        drive
-            .apply_contract_cbor(initial_contract_cbor, None, 0f64, None)
-            .expect("expected to apply contract successfully");
-
-        let updated_contract_cbor = hex::decode("01000000a66324696458209c2b800c5ea525d032a9fda4dda22a896f1e763af5f0e15ae7f93882b7439d77652464656673a1686c6173744e616d65a1647479706566737472696e676724736368656d61783468747470733a2f2f736368656d612e646173682e6f72672f6470702d302d342d302f6d6574612f646174612d636f6e7472616374676f776e657249645820636d3188dfffe62efb10e20347ec6c41b3e49fa31cb757ef4bad6cd8f1c7f4b66776657273696f6e0269646f63756d656e7473a86b756e697175654461746573a56474797065666f626a65637467696e646963657382a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657382a16a2463726561746564417463617363a16a2475706461746564417463617363a2646e616d6566696e646578326a70726f7065727469657381a16a2475706461746564417463617363687265717569726564836966697273744e616d656a246372656174656441746a247570646174656441746a70726f70657274696573a2686c6173744e616d65a1647479706566737472696e676966697273744e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46c6e696365446f63756d656e74a46474797065666f626a656374687265717569726564816a246372656174656441746a70726f70657274696573a1646e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46e6e6f54696d65446f63756d656e74a36474797065666f626a6563746a70726f70657274696573a1646e616d65a1647479706566737472696e67746164646974696f6e616c50726f70657274696573f46e707265747479446f63756d656e74a46474797065666f626a65637468726571756972656482686c6173744e616d656a247570646174656441746a70726f70657274696573a1686c6173744e616d65a1642472656670232f24646566732f6c6173744e616d65746164646974696f6e616c50726f70657274696573f46e7769746842797465417272617973a56474797065666f626a65637467696e646963657381a2646e616d6566696e646578316a70726f7065727469657381a16e6279746541727261794669656c6463617363687265717569726564816e6279746541727261794669656c646a70726f70657274696573a26e6279746541727261794669656c64a36474797065656172726179686d61784974656d731069627974654172726179f56f6964656e7469666965724669656c64a56474797065656172726179686d61784974656d731820686d696e4974656d73182069627974654172726179f570636f6e74656e744d656469615479706578216170706c69636174696f6e2f782e646173682e6470702e6964656e746966696572746164646974696f6e616c50726f70657274696573f46f696e6465786564446f63756d656e74a56474797065666f626a65637467696e646963657386a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657382a168246f776e6572496463617363a16966697273744e616d656464657363a3646e616d6566696e6465783266756e69717565f56a70726f7065727469657382a168246f776e6572496463617363a1686c6173744e616d656464657363a2646e616d6566696e646578336a70726f7065727469657381a1686c6173744e616d6563617363a2646e616d6566696e646578346a70726f7065727469657382a16a2463726561746564417463617363a16a2475706461746564417463617363a2646e616d6566696e646578356a70726f7065727469657381a16a2475706461746564417463617363a2646e616d6566696e646578366a70726f7065727469657381a16a2463726561746564417463617363687265717569726564846966697273744e616d656a246372656174656441746a24757064617465644174686c6173744e616d656a70726f70657274696573a2686c6173744e616d65a2647479706566737472696e67696d61784c656e6774681901006966697273744e616d65a2647479706566737472696e67696d61784c656e677468190100746164646974696f6e616c50726f70657274696573f4716d79417765736f6d65446f63756d656e74a56474797065666f626a65637467696e646963657382a3646e616d656966697273744e616d6566756e69717565f56a70726f7065727469657381a16966697273744e616d6563617363a3646e616d657166697273744e616d654c6173744e616d6566756e69717565f56a70726f7065727469657382a16966697273744e616d6563617363a1686c6173744e616d6563617363687265717569726564846966697273744e616d656a246372656174656441746a24757064617465644174686c6173744e616d656a70726f70657274696573a2686c6173744e616d65a2647479706566737472696e67696d61784c656e6774681901006966697273744e616d65a2647479706566737472696e67696d61784c656e677468190100746164646974696f6e616c50726f70657274696573f4781d6f7074696f6e616c556e69717565496e6465786564446f63756d656e74a56474797065666f626a65637467696e646963657383a3646e616d6566696e6465783166756e69717565f56a70726f7065727469657381a16966697273744e616d656464657363a3646e616d6566696e6465783266756e69717565f56a70726f7065727469657383a168246f776e6572496463617363a16966697273744e616d6563617363a1686c6173744e616d6563617363a3646e616d6566696e6465783366756e69717565f56a70726f7065727469657382a167636f756e74727963617363a1646369747963617363687265717569726564826966697273744e616d65686c6173744e616d656a70726f70657274696573a46463697479a2647479706566737472696e67696d61784c656e67746819010067636f756e747279a2647479706566737472696e67696d61784c656e677468190100686c6173744e616d65a2647479706566737472696e67696d61784c656e6774681901006966697273744e616d65a2647479706566737472696e67696d61784c656e677468190100746164646974696f6e616c50726f70657274696573f4").unwrap();
-
-        drive
-            .apply_contract_cbor(updated_contract_cbor, None, 0f64, None)
-            .expect("should update initial contract");
-    }
-
-    #[test]
-    fn test_create_deep_nested_contract_50() {
-        let (drive, contract, _contract_cbor) = setup_deep_nested_contract();
-
-        let document_type = contract
-            .document_type_for_name("nest")
-            .expect("expected to get document type");
-
-        let document = document_type.random_document(Some(5));
-
-        let nested_value = document.properties.get("abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0.abc0");
-
-        assert!(nested_value.is_some());
-
-        let random_owner_id = rand::thread_rng().gen::<[u8; 32]>();
-        drive
-            .add_document_for_contract(
-                DocumentAndContractInfo {
-                    document_info: DocumentInfo::DocumentAndSerialization((
-                        &document,
-                        document.to_cbor().as_slice(),
-                    )),
-                    contract: &contract,
-                    document_type,
-                    owner_id: Some(&random_owner_id),
-                },
-                false,
-                0f64,
-                None,
-            )
-            .expect("expected to insert a document successfully");
-    }
-
-    #[test]
-    fn test_create_reference_contract() {
-        let (drive, contract, _contract_cbor) = setup_reference_contract();
-
-        let document_type = contract
-            .document_type_for_name("note")
-            .expect("expected to get document type");
-
-        let document = document_type.random_document(Some(5));
-
-        let ref_value = document.properties.get("abc17");
-
-        assert!(ref_value.is_some());
-
-        let random_owner_id = rand::thread_rng().gen::<[u8; 32]>();
-        drive
-            .add_document_for_contract(
-                DocumentAndContractInfo {
-                    document_info: DocumentInfo::DocumentAndSerialization((
-                        &document,
-                        document.to_cbor().as_slice(),
-                    )),
-                    contract: &contract,
-                    document_type,
-                    owner_id: Some(&random_owner_id),
-                },
-                false,
-                0f64,
-                None,
-            )
-            .expect("expected to insert a document successfully");
     }
 
     #[test]
@@ -3540,7 +3326,7 @@ mod tests {
         let contract = value_to_cbor(contract, Some(defaults::PROTOCOL_VERSION));
 
         drive
-            .apply_contract_cbor(contract.clone(), None, 0f64, None)
+            .apply_contract_cbor(contract.clone(), None, 0f64, true, None)
             .expect("should create a contract");
 
         // Create document
@@ -3568,6 +3354,7 @@ mod tests {
                 None,
                 true,
                 0f64,
+                true,
                 None,
             )
             .expect("should add document");
@@ -3596,6 +3383,7 @@ mod tests {
                 "indexedDocument",
                 None,
                 0f64,
+                true,
                 None,
             )
             .expect("should update document");
@@ -3612,6 +3400,7 @@ mod tests {
                 &contract,
                 "indexedDocument",
                 None,
+                true,
                 None,
             )
             .expect("should delete document");
@@ -3633,5 +3422,181 @@ mod tests {
         assert!(document.get("a").is_some());
         let tmp_dir = TempDir::new().unwrap();
         let _drive = Drive::open(tmp_dir);
+    }
+
+    #[test]
+    fn test_create_update_and_delete_document_without_apply() {
+        let tmp_dir = TempDir::new().unwrap();
+        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
+
+        drive
+            .create_root_tree(None)
+            .expect("should create root tree");
+
+        let contract = json!({
+            "protocolVersion": 1,
+            "$id": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+            "$schema": "https://schema.dash.org/dpp-0-4-0/meta/data-contract",
+            "version": 1,
+            "ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+            "documents": {
+                "indexedDocument": {
+                    "type": "object",
+                    "indices": [
+                        {"name":"index1", "properties": [{"$ownerId":"asc"}, {"firstName":"desc"}], "unique":true},
+                        {"name":"index2", "properties": [{"$ownerId":"asc"}, {"lastName":"desc"}], "unique":true},
+                        {"name":"index3", "properties": [{"lastName":"asc"}]},
+                        {"name":"index4", "properties": [{"$createdAt":"asc"}, {"$updatedAt":"asc"}]},
+                        {"name":"index5", "properties": [{"$updatedAt":"asc"}]},
+                        {"name":"index6", "properties": [{"$createdAt":"asc"}]}
+                    ],
+                    "properties":{
+                        "firstName": {
+                            "type": "string",
+                            "maxLength": 63,
+                        },
+                        "lastName": {
+                            "type": "string",
+                            "maxLength": 63,
+                        }
+                    },
+                    "required": ["firstName", "$createdAt", "$updatedAt", "lastName"],
+                    "additionalProperties": false,
+                },
+            },
+        });
+
+        let contract = value_to_cbor(contract, Some(defaults::PROTOCOL_VERSION));
+
+        drive
+            .apply_contract_cbor(contract.clone(), None, 0f64, true, None)
+            .expect("should create a contract");
+
+        // Create document with apply
+
+        let document = json!({
+           "$protocolVersion": 1,
+           "$id": "DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN",
+           "$type": "indexedDocument",
+           "$dataContractId": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+           "$ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+           "$revision": 1,
+           "firstName": "myName",
+           "lastName": "lastName",
+           "$createdAt":1647535750329 as u64,
+           "$updatedAt":1647535750329 as u64,
+        });
+
+        let document_cbor = value_to_cbor(document, Some(defaults::PROTOCOL_VERSION));
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .add_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                false,
+                0f64,
+                true,
+                None,
+            )
+            .expect("should add document");
+
+        // Create document without apply
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .add_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                false,
+                0f64,
+                false,
+                None,
+            )
+            .expect("should add document");
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
+
+        // Update document with apply
+
+        let document = json!({
+           "$protocolVersion": 1,
+           "$id": "DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN",
+           "$type": "indexedDocument",
+           "$dataContractId": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+           "$ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+           "$revision": 2,
+           "firstName": "updatedName",
+           "lastName": "lastName",
+           "$createdAt":1647535750329 as u64,
+           "$updatedAt":1647535754556 as u64,
+        });
+
+        let document_cbor = value_to_cbor(document, Some(defaults::PROTOCOL_VERSION));
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .update_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                0f64,
+                true,
+                None,
+            )
+            .expect("should update document");
+
+        // Update document without apply
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .update_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                0f64,
+                false,
+                None,
+            )
+            .expect("should update document");
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
+
+        // Delete document with apply
+
+        let document_id = bs58::decode("DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN")
+            .into_vec()
+            .expect("should decode base58");
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .delete_document_for_contract_cbor(
+                document_id.as_slice(),
+                &contract,
+                "indexedDocument",
+                None,
+                true,
+                None,
+            )
+            .expect("should delete document");
+
+        // Delete document without apply
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .delete_document_for_contract_cbor(
+                document_id.as_slice(),
+                &contract,
+                "indexedDocument",
+                None,
+                false,
+                None,
+            )
+            .expect("should delete document");
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
     }
 }

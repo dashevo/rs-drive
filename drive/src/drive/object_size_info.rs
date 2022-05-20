@@ -226,9 +226,9 @@ impl<'a, const N: usize> PathKeyElementInfo<'a, N> {
         key_element: KeyElementInfo<'a>,
     ) -> Result<Self, Error> {
         match path_info {
-            PathIterator(path_interator) => match key_element {
+            PathIterator(path_iterator) => match key_element {
                 KeyElementInfo::KeyElement((key, element)) => {
-                    Ok(PathKeyElement((path_interator, key, element)))
+                    Ok(PathKeyElement((path_iterator, key, element)))
                 }
                 KeyElementInfo::KeyElementSize(_) => Err(Error::Drive(
                     DriveError::CorruptedCodeExecution("path matched with key element size"),
@@ -238,15 +238,15 @@ impl<'a, const N: usize> PathKeyElementInfo<'a, N> {
                 KeyElementInfo::KeyElement((key, element)) => Ok(PathKeyElementSize((
                     path_size,
                     key.len(),
-                    element.node_byte_size(key),
+                    element.node_byte_size(key.len()),
                 ))),
                 KeyElementInfo::KeyElementSize((key_len, element_size)) => {
                     Ok(PathKeyElementSize((path_size, key_len, element_size)))
                 }
             },
-            PathFixedSizeIterator(path_interator) => match key_element {
+            PathFixedSizeIterator(path_iterator) => match key_element {
                 KeyElementInfo::KeyElement((key, element)) => {
-                    Ok(PathFixedSizeKeyElement((path_interator, key, element)))
+                    Ok(PathFixedSizeKeyElement((path_iterator, key, element)))
                 }
                 KeyElementInfo::KeyElementSize(_) => Err(Error::Drive(
                     DriveError::CorruptedCodeExecution("path matched with key element size"),
@@ -284,11 +284,13 @@ impl<'a, const N: usize> PathKeyElementInfo<'a, N> {
     pub fn insert_len(&'a self) -> usize {
         match self {
             //todo v23: this is an incorrect approximation
-            PathKeyElementInfo::PathKeyElement((_, key, element)) => element.node_byte_size(key),
+            PathKeyElementInfo::PathKeyElement((_, key, element)) => {
+                element.node_byte_size(key.len())
+            }
             PathKeyElementInfo::PathKeyElementSize((_, key_size, element_size)) => {
                 *key_size + *element_size
             }
-            PathFixedSizeKeyElement((_, key, element)) => element.node_byte_size(key),
+            PathFixedSizeKeyElement((_, key, element)) => element.node_byte_size(key.len()),
         }
     }
 }
@@ -377,4 +379,13 @@ impl<'a> KeyValueInfo<'a> {
             KeyValueMaxSize((key_size, _)) => *key_size,
         }
     }
+}
+
+pub enum PathKeyForDeletionElementInfo<'a, const N: usize> {
+    /// A triple Path Key and Element
+    PathFixedSizeKeyForDeletion(([&'a [u8]; N], &'a [u8])),
+    /// A triple Path Key and Element
+    PathKeyForDeletion((Vec<Vec<u8>>, &'a [u8])),
+    /// A triple of sum of Path lengths, Key length and Element size
+    PathKeyElementSizeForDeletion((usize, usize, usize)),
 }
