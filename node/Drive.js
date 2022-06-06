@@ -71,15 +71,16 @@ class Drive {
   /**
    * @param {DataContract} dataContract
    * @param {Date} blockTime
+   * @param {boolean} [apply=true]
    * @param {boolean} [useTransaction=false]
    * @returns {Promise<[number, number]>}
    */
-  async applyContract(dataContract, blockTime, useTransaction = false) {
+  async applyContract(dataContract, blockTime, apply = true, useTransaction = false) {
     return driveApplyContractAsync.call(
       this.drive,
       dataContract.toBuffer(),
       blockTime,
-      true,
+      apply,
       useTransaction,
     );
   }
@@ -87,10 +88,11 @@ class Drive {
   /**
    * @param {Document} document
    * @param {Date} blockTime
+   * @param {boolean} [apply=true]
    * @param {boolean} [useTransaction=false]
    * @returns {Promise<[number, number]>}
    */
-  async createDocument(document, blockTime, useTransaction = false) {
+  async createDocument(document, blockTime, apply = true, useTransaction = false) {
     return driveCreateDocumentAsync.call(
       this.drive,
       document.toBuffer(),
@@ -99,7 +101,7 @@ class Drive {
       document.getOwnerId().toBuffer(),
       true,
       blockTime,
-      true,
+      apply,
       useTransaction,
     );
   }
@@ -107,10 +109,11 @@ class Drive {
   /**
    * @param {Document} document
    * @param {Date} blockTime
+   * @param {boolean} [apply=true]
    * @param {boolean} [useTransaction=false]
    * @returns {Promise<[number, number]>}
    */
-  async updateDocument(document, blockTime, useTransaction = false) {
+  async updateDocument(document, blockTime, apply = true, useTransaction = false) {
     return driveUpdateDocumentAsync.call(
       this.drive,
       document.toBuffer(),
@@ -118,7 +121,7 @@ class Drive {
       document.getType(),
       document.getOwnerId().toBuffer(),
       blockTime,
-      true,
+      apply,
       useTransaction,
     );
   }

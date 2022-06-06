@@ -1,3 +1,4 @@
+use crate::drive::object_size_info::ActionType;
 use crate::drive::object_size_info::PathKeyElementInfo::PathFixedSizeKeyElement;
 use crate::drive::{Drive, RootTree};
 use crate::error::Error;
@@ -11,7 +12,7 @@ impl Drive {
         &self,
         identity_key: &[u8],
         identity_bytes: Element,
-        apply: bool,
+        action: ActionType,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let mut insert_operations: Vec<InsertOperation> = vec![];
@@ -22,7 +23,7 @@ impl Drive {
                 identity_bytes,
             )),
             transaction,
-            apply,
+            action.is_apply(),
             &mut insert_operations,
         )?;
         calculate_fee(None, None, Some(insert_operations), None)
@@ -32,7 +33,7 @@ impl Drive {
         &self,
         identity_id: Option<&[u8]>,
         identity_bytes: Vec<u8>,
-        apply: bool,
+        action: ActionType,
         transaction: TransactionArg,
     ) -> Result<(i64, u64), Error> {
         let identity_id = match identity_id {
@@ -46,7 +47,7 @@ impl Drive {
         self.insert_identity(
             identity_id.as_slice(),
             Element::Item(identity_bytes),
-            apply,
+            action,
             transaction,
         )
     }
@@ -54,6 +55,7 @@ impl Drive {
 
 #[cfg(test)]
 mod tests {
+    use crate::drive::object_size_info::ActionType::ItemApply;
     use crate::drive::Drive;
     use crate::identity::Identity;
     use grovedb::Element;
@@ -79,7 +81,7 @@ mod tests {
             .insert_identity(
                 &identity.id,
                 Element::Item(identity_bytes),
-                true,
+                ItemApply,
                 Some(&db_transaction),
             )
             .expect("expected to insert identity");

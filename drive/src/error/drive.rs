@@ -3,6 +3,9 @@ pub enum DriveError {
     // This error should never occur, it is the equivalent of a panic.
     #[error("corrupted code execution error: {0}")]
     CorruptedCodeExecution(&'static str),
+    // The Client asked for an invalid action, for example worst case document type on contracts
+    #[error("invalid action type error: {0}")]
+    InvalidActionType(&'static str),
 
     #[error("grovedb insertion error: {0}")]
     GroveDBInsertion(&'static str),
@@ -38,4 +41,9 @@ pub enum DriveError {
     CorruptedDocumentAlreadyExists(&'static str),
     #[error("corrupted document not an item error: {0}")]
     CorruptedDocumentNotItem(&'static str),
+
+    #[error("multiplier not supported error: {0}")]
+    MultiplierNotSupported(&'static str),
+    #[error("multiplier encoding error: {0}")]
+    MultiplierEncodingNotSupported(&'static str),
 }

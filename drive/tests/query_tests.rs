@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 use rs_drive::common;
 use rs_drive::common::{cbor_inner_bytes_value, setup_contract};
 use rs_drive::contract::{Contract, Document};
-use rs_drive::drive::object_size_info::DocumentAndContractInfo;
+use rs_drive::drive::object_size_info::{ActionType, DocumentAndContractInfo};
 use rs_drive::drive::object_size_info::DocumentInfo::DocumentAndSerialization;
 use rs_drive::drive::Drive;
 use rs_drive::error::{query::QueryError, Error};
@@ -148,7 +148,7 @@ pub fn setup_family_tests(count: u32, seed: u64) -> (Drive, Contract, TempDir) {
                 },
                 true,
                 0f64,
-                true,
+                ActionType::ItemApply,
                 Some(&db_transaction),
             )
             .expect("document should be inserted");
@@ -199,7 +199,7 @@ pub fn setup_family_tests_with_nulls(count: u32, seed: u64) -> (Drive, Contract,
                 },
                 true,
                 0f64,
-                true,
+                ActionType::ItemApply,
                 Some(&db_transaction),
             )
             .expect("document should be inserted");
@@ -303,7 +303,7 @@ pub fn setup_dpns_tests(count: u32, seed: u64) -> (Drive, Contract, TempDir) {
                 },
                 true,
                 0f64,
-                true,
+                ActionType::ItemApply,
                 Some(&db_transaction),
             )
             .expect("document should be inserted");
@@ -361,7 +361,7 @@ pub fn setup_dpns_test_with_data(path: &str) -> (Drive, Contract, TempDir) {
                     },
                     false,
                     0f64,
-                    true,
+                    ActionType::ItemApply,
                     Some(&db_transaction),
                 )
                 .expect("expected to insert a document successfully");
@@ -400,7 +400,7 @@ fn test_query_many() {
                 },
                 true,
                 0f64,
-                true,
+                ActionType::ItemApply,
                 Some(&db_transaction),
             )
             .expect("document should be inserted");
@@ -1062,7 +1062,7 @@ fn test_family_basic_queries() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -1103,7 +1103,7 @@ fn test_family_basic_queries() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -1335,7 +1335,7 @@ fn test_family_basic_queries() {
             contract_cbor.clone(),
             None,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("expected to apply contract successfully");
@@ -1902,6 +1902,7 @@ fn test_family_with_nulls_query() {
                 &contract,
                 "person",
                 None,
+                ActionType::ItemApply,
                 Some(&db_transaction),
             )
             .expect("expected to be able to delete the document");
@@ -2747,7 +2748,7 @@ fn test_dpns_query_start_at_with_null_id() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -2783,7 +2784,7 @@ fn test_dpns_query_start_at_with_null_id() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -2920,7 +2921,7 @@ fn test_dpns_query_start_after_with_null_id() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -2956,7 +2957,7 @@ fn test_dpns_query_start_after_with_null_id() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -3095,7 +3096,7 @@ fn test_dpns_query_start_after_with_null_id_desc() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");
@@ -3131,7 +3132,7 @@ fn test_dpns_query_start_after_with_null_id_desc() {
             },
             true,
             0f64,
-            true,
+            ActionType::ItemApply,
             Some(&db_transaction),
         )
         .expect("document should be inserted");

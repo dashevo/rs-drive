@@ -10,6 +10,20 @@ use PathInfo::{PathFixedSizeIterator, PathIterator, PathSize};
 use PathKeyElementInfo::{PathFixedSizeKeyElement, PathKeyElement, PathKeyElementSize};
 use PathKeyInfo::{PathFixedSizeKey, PathFixedSizeKeyRef, PathKey, PathKeyRef, PathKeySize};
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActionType {
+    ItemApply,
+    DryRunFee,
+    WorstCaseFeeWithKnownItem,
+    WorstCaseFeeForDocumentType,
+}
+
+impl ActionType {
+    pub fn is_apply(&self) -> bool {
+        self == &Self::ItemApply
+    }
+}
+
 #[derive(Clone)]
 pub enum PathInfo<'a, const N: usize> {
     /// An into iter Path
@@ -295,6 +309,22 @@ impl<'a, const N: usize> PathKeyElementInfo<'a, N> {
     }
 }
 
+pub enum PathKeyForDeletionElementInfo<'a, const N: usize> {
+    /// A triple Path Key and Element
+    PathFixedSizeKeyForDeletion(([&'a [u8]; N], &'a [u8])),
+    /// A triple Path Key and Element
+    PathKeyForDeletion((Vec<Vec<u8>>, &'a [u8])),
+    /// A triple of sum of Path lengths, Key length and Element size
+    PathKeyElementSizeForDeletion((usize, usize, usize)),
+}
+
+pub enum PathKeyForDeletionUpTreeInfo<'a, const N: usize> {
+    /// A triple Path Key and Element
+    PathFixedSizeKeyForDeletionUpTree(([&'a [u8]; N], &'a [u8])),
+    /// A triple of sum of Path lengths, Key length and Element size
+    PathKeyElementSizeForDeletion(Vec<PathKeyForDeletionElementInfo<'a, N>>),
+}
+
 pub struct DocumentAndContractInfo<'a> {
     pub document_info: DocumentInfo<'a>,
     pub contract: &'a Contract,
@@ -302,10 +332,11 @@ pub struct DocumentAndContractInfo<'a> {
     pub owner_id: Option<&'a [u8]>,
 }
 
-#[derive(Clone)]
 pub enum DocumentInfo<'a> {
-    /// The document and it's serialized form
+    /// The document ref and it's serialized form
     DocumentAndSerialization((&'a Document, &'a [u8])),
+    /// The document
+    OwnedDocument(Document),
     /// An element size
     DocumentSize(usize),
 }
@@ -314,6 +345,7 @@ impl<'a> DocumentInfo<'a> {
     pub fn is_document_and_serialization(&self) -> bool {
         match self {
             DocumentInfo::DocumentAndSerialization(_) => true,
+            DocumentInfo::OwnedDocument(_) => false,
             DocumentInfo::DocumentSize(_) => false,
         }
     }
@@ -325,6 +357,9 @@ impl<'a> DocumentInfo<'a> {
             }
             DocumentInfo::DocumentSize(document_max_size) => {
                 KeyValueInfo::KeyValueMaxSize((32, *document_max_size))
+            }
+            DocumentInfo::OwnedDocument(document) => {
+                KeyValueInfo::KeyRefRequest(document.id.as_slice())
             }
         }
     }
@@ -360,6 +395,14 @@ impl<'a> DocumentInfo<'a> {
                     Ok(Some(KeySize(max_size)))
                 }
             },
+            DocumentInfo::OwnedDocument(document) => {
+                let raw_value =
+                    document.get_raw_for_document_type(key_path, document_type, owner_id)?;
+                match raw_value {
+                    None => Ok(None),
+                    Some(value) => Ok(Some(Key(value))),
+                }
+            }
         }
     }
 }
