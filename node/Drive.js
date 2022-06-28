@@ -15,6 +15,7 @@ const {
   driveUpdateDocument,
   driveDeleteDocument,
   driveQueryDocuments,
+  driveProveQueryDocuments,
   driveInsertIdentity,
 } = require('neon-load-or-build')({
   dir: pathJoin(__dirname, '..'),
@@ -34,6 +35,7 @@ const driveCreateDocumentAsync = appendStack(promisify(driveCreateDocument));
 const driveUpdateDocumentAsync = appendStack(promisify(driveUpdateDocument));
 const driveDeleteDocumentAsync = appendStack(promisify(driveDeleteDocument));
 const driveQueryDocumentsAsync = appendStack(promisify(driveQueryDocuments));
+const driveProveQueryDocumentsAsync = appendStack(promisify(driveProveQueryDocuments));
 const driveInsertIdentityAsync = appendStack(promisify(driveInsertIdentity));
 
 // Wrapper class for the boxed `Drive` for idiomatic JavaScript usage
@@ -193,6 +195,33 @@ class Drive {
       documents,
       processingFee,
     ];
+  }
+
+  /**
+   *
+   * @param {DataContract} dataContract
+   * @param {string} documentType
+   * @param [query]
+   * @param [query.where]
+   * @param [query.limit]
+   * @param [query.startAt]
+   * @param [query.startAfter]
+   * @param [query.orderBy]
+   * @param {Boolean} [useTransaction=false]
+   *
+   * @returns {Promise<[Document[], number]>}
+   */
+  async proveQueryDocuments(dataContract, documentType, query = {}, useTransaction = false) {
+    const encodedQuery = await cbor.encodeAsync(query);
+
+    // eslint-disable-next-line no-return-await
+    return await driveProveQueryDocumentsAsync.call(
+      this.drive,
+      encodedQuery,
+      dataContract.id.toBuffer(),
+      documentType,
+      useTransaction,
+    );
   }
 
   /**

@@ -4,10 +4,15 @@ use crate::drive::object_size_info::KeyValueInfo::{KeyRefRequest, KeyValueMaxSiz
 use crate::drive::object_size_info::PathKeyElementInfo::{
     PathFixedSizeKeyElement, PathKeyElement, PathKeyElementSize,
 };
+use crate::drive::object_size_info::PathKeyForDeletionElementInfo::{
+    PathFixedSizeKeyForDeletion, PathKeyElementSizeForDeletion, PathKeyForDeletion,
+};
 use crate::drive::object_size_info::PathKeyInfo::{
     PathFixedSizeKey, PathFixedSizeKeyRef, PathKey, PathKeyRef, PathKeySize,
 };
-use crate::drive::object_size_info::{KeyInfo, KeyValueInfo, PathKeyElementInfo, PathKeyInfo};
+use crate::drive::object_size_info::{
+    KeyInfo, KeyValueInfo, PathKeyElementInfo, PathKeyForDeletionElementInfo, PathKeyInfo,
+};
 use crate::drive::Drive;
 use crate::error::drive::DriveError;
 use crate::error::Error;
@@ -49,6 +54,7 @@ impl Drive {
                             Element::empty_tree_with_flags(storage_flags.to_element_flags()),
                             transaction,
                         )
+                        .unwrap()
                         .map_err(Error::GroveDB)?
                 }
                 Ok(())
@@ -84,12 +90,14 @@ impl Drive {
                 let path_clone = path.clone();
                 let path_iter: Vec<&[u8]> = path_clone.iter().map(|x| x.as_slice()).collect();
                 let inserted = if apply {
-                    self.grove.insert_if_not_exists(
-                        path_iter.clone(),
-                        key,
-                        Element::empty_tree_with_flags(storage_flags.to_element_flags()),
-                        transaction,
-                    )?
+                    self.grove
+                        .insert_if_not_exists(
+                            path_iter.clone(),
+                            key,
+                            Element::empty_tree_with_flags(storage_flags.to_element_flags()),
+                            transaction,
+                        )
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -128,12 +136,14 @@ impl Drive {
                 let path_clone = path.clone();
                 let path_iter: Vec<&[u8]> = path_clone.iter().map(|x| x.as_slice()).collect();
                 let inserted = if apply {
-                    self.grove.insert_if_not_exists(
-                        path_iter.clone(),
-                        key.as_slice(),
-                        Element::empty_tree_with_flags(storage_flags.to_element_flags()),
-                        transaction,
-                    )?
+                    self.grove
+                        .insert_if_not_exists(
+                            path_iter.clone(),
+                            key.as_slice(),
+                            Element::empty_tree_with_flags(storage_flags.to_element_flags()),
+                            transaction,
+                        )
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -154,12 +164,14 @@ impl Drive {
             }
             PathFixedSizeKey((path, key)) => {
                 let inserted = if apply {
-                    self.grove.insert_if_not_exists(
-                        path.clone(),
-                        key.as_slice(),
-                        Element::empty_tree_with_flags(storage_flags.to_element_flags()),
-                        transaction,
-                    )?
+                    self.grove
+                        .insert_if_not_exists(
+                            path.clone(),
+                            key.as_slice(),
+                            Element::empty_tree_with_flags(storage_flags.to_element_flags()),
+                            transaction,
+                        )
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -182,12 +194,14 @@ impl Drive {
             }
             PathFixedSizeKeyRef((path, key)) => {
                 let inserted = if apply {
-                    self.grove.insert_if_not_exists(
-                        path.clone(),
-                        key,
-                        Element::empty_tree_with_flags(storage_flags.to_element_flags()),
-                        transaction,
-                    )?
+                    self.grove
+                        .insert_if_not_exists(
+                            path.clone(),
+                            key,
+                            Element::empty_tree_with_flags(storage_flags.to_element_flags()),
+                            transaction,
+                        )
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -234,6 +248,7 @@ impl Drive {
                     self.grove
                         .insert(path_iter, key, element, transaction)
                         .map_err(Error::GroveDB)
+                        .unwrap()
                 } else {
                     Ok(())
                 }
@@ -262,6 +277,7 @@ impl Drive {
                     self.grove
                         .insert(path, key, element, transaction)
                         .map_err(Error::GroveDB)
+                        .unwrap()
                 } else {
                     Ok(())
                 }
@@ -288,7 +304,8 @@ impl Drive {
                 };
                 let inserted = if apply {
                     self.grove
-                        .insert_if_not_exists(path_iter.clone(), key, element, transaction)?
+                        .insert_if_not_exists(path_iter.clone(), key, element, transaction)
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -334,7 +351,8 @@ impl Drive {
                 };
                 let inserted = if apply {
                     self.grove
-                        .insert_if_not_exists(path_iter.clone(), key, element, transaction)?
+                        .insert_if_not_exists(path_iter.clone(), key, element, transaction)
+                        .unwrap()?
                 } else {
                     true
                 };
@@ -406,7 +424,7 @@ impl Drive {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
-        let query_result = self.grove.has_raw(path, key, transaction);
+        let query_result = self.grove.has_raw(path, key, transaction).unwrap();
         match query_result {
             Err(GroveError::PathKeyNotFound(_)) | Err(GroveError::PathNotFound(_)) => Ok(false),
             _ => Ok(query_result?),
@@ -573,6 +591,63 @@ impl Drive {
         }
     }
 
+    pub fn grove_delete<'a, const N: usize>(
+        &'a self,
+        path_key_element_info: PathKeyForDeletionElementInfo<N>,
+        transaction: TransactionArg,
+    ) -> Result<(), Error> {
+        match path_key_element_info {
+            PathFixedSizeKeyForDeletion((path, key)) => {
+                self.grove
+                    .delete(path, key, transaction)
+                    .map_err(Error::GroveDB)
+                    .unwrap()?;
+            }
+
+            PathKeyForDeletion((path, key)) => {
+                let path: Vec<&[u8]> = path.iter().map(|i| i.as_slice()).collect();
+
+                self.grove
+                    .delete(path, key, transaction)
+                    .map_err(Error::GroveDB)
+                    .unwrap()?;
+            }
+
+            PathKeyElementSizeForDeletion((_, _, _)) => {}
+        }
+
+        Ok(())
+    }
+
+    pub fn grove_delete_up_tree_while_empty<'a, const N: usize>(
+        &'a self,
+        path_key_element_info: PathKeyForDeletionElementInfo<N>,
+        stop_path_height: Option<u16>,
+        transaction: TransactionArg,
+    ) -> Result<(), Error> {
+        match path_key_element_info {
+            PathFixedSizeKeyForDeletion((path, key)) => {
+                self.grove
+                    .delete_up_tree_while_empty(path, key, stop_path_height, transaction)
+                    .map_err(Error::GroveDB)
+                    .unwrap()?;
+            }
+
+            PathKeyForDeletion((path, key)) => {
+                let path: Vec<&[u8]> = path.iter().map(|i| i.as_slice()).collect();
+
+                self.grove
+                    .delete_up_tree_while_empty(path, key, stop_path_height, transaction)
+                    .map_err(Error::GroveDB)
+                    .unwrap()?;
+            }
+
+            PathKeyElementSizeForDeletion((_, _, _)) => {}
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn batch_delete<'a, 'c, P>(
         &'a self,
         path: P,
@@ -596,6 +671,7 @@ impl Drive {
                 &current_batch_operations,
                 transaction,
             )
+            .unwrap()
             .map_err(Error::GroveDB)?
         {
             drive_operations.push(DriveOperation::GroveOperation(delete_operation))
@@ -624,9 +700,10 @@ impl Drive {
                 key,
                 stop_path_height,
                 true,
-                &current_batch_operations,
+                current_batch_operations,
                 transaction,
             )
+            .unwrap()
             .map_err(Error::GroveDB)?
         {
             delete_operations
@@ -650,7 +727,10 @@ impl Drive {
         let path_iter = path.into_iter();
         match key_value_info {
             KeyRefRequest(key) => {
-                let item = self.grove.get(path_iter.clone(), key, transaction)?;
+                let item = self
+                    .grove
+                    .get(path_iter.clone(), key, transaction)
+                    .unwrap()?;
                 query_operations.push(QueryOperation::for_value_retrieval_in_path(
                     key.len(),
                     path_iter,
@@ -675,8 +755,9 @@ impl Drive {
     ) -> Result<(), Error> {
         if self.config.batching_enabled {
             self.grove
-                .apply_batch(ops, validate, transaction)
+                .apply_batch(ops, None, transaction)
                 .map_err(Error::GroveDB)
+                .unwrap()
         } else {
             //println!("changes {} {:#?}", ops.len(), ops);
             for op in ops.into_iter() {
@@ -698,8 +779,10 @@ impl Drive {
                         let path_iter: Vec<&[u8]> = op.path.iter().map(|x| x.as_slice()).collect();
                         self.grove
                             .delete(path_iter, op.key.as_slice(), transaction)
-                            .map_err(Error::GroveDB)?;
+                            .map_err(Error::GroveDB)
+                            .unwrap()?;
                     }
+                    _ => {}
                 }
             }
             Ok(())

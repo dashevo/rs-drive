@@ -11,7 +11,6 @@ use crate::error::drive::DriveError;
 use crate::error::query::QueryError;
 use crate::error::structure::StructureError;
 use crate::error::Error;
-use crate::error::Error::GroveDB;
 use crate::fee::calculate_fee;
 use crate::fee::op::QueryOperation;
 use ciborium::value::Value;
@@ -1122,6 +1121,7 @@ impl<'a> DriveQuery<'a> {
         drive
             .grove
             .get_proved_path_query(&path_query, transaction)
+            .unwrap()
             .map_err(Error::GroveDB)
     }
 
@@ -1137,9 +1137,10 @@ impl<'a> DriveQuery<'a> {
         let proof = drive
             .grove
             .get_proved_path_query(&path_query, transaction)
+            .unwrap()
             .map_err(Error::GroveDB)?;
         let (root_hash, mut key_value_elements) =
-            GroveDb::execute_proof(proof.as_slice(), &path_query).map_err(Error::GroveDB)?;
+            GroveDb::verify_query(proof.as_slice(), &path_query).map_err(Error::GroveDB)?;
 
         let mut values = vec![];
         for (_, value) in key_value_elements.iter_mut() {
@@ -1165,7 +1166,7 @@ impl<'a> DriveQuery<'a> {
         let mut query_operations: Vec<QueryOperation> = vec![];
         let path_query =
             self.construct_path_query_operations(drive, transaction, &mut query_operations)?;
-        let query_result = drive.grove.get_path_query(&path_query, transaction);
+        let query_result = drive.grove.query(&path_query, transaction).unwrap();
         match query_result {
             Err(GroveError::PathKeyNotFound(_)) | Err(GroveError::PathNotFound(_)) => {
                 let path_query_operations = QueryOperation::for_empty_path_query(&path_query);

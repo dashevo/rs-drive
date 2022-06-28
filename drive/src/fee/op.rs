@@ -1,4 +1,4 @@
-use crate::drive::defaults::EMPTY_TREE_STORAGE_SIZE;
+use crate::drive::defaults::{EMPTY_TREE_STORAGE_SIZE, STORAGE_FLAGS_SIZE};
 use crate::drive::flags::StorageFlags;
 use crate::fee::op::DriveOperation::{CostCalculationInsertOperation, GroveOperation};
 use enum_map::{enum_map, Enum, EnumMap};
@@ -261,6 +261,16 @@ impl DeleteOperation {
         DeleteOperation {
             key_size: key_size as u16,
             value_size: value_size as u32,
+            multiplier,
+        }
+    }
+
+    pub fn for_key_value_size(key_size: usize, value_size: usize, multiplier: u64) -> Self {
+        let serialized_value_size = Element::required_item_space(value_size, STORAGE_FLAGS_SIZE);
+        let node_value_size = Element::calculate_node_byte_size(serialized_value_size, key_size);
+        DeleteOperation {
+            key_size: key_size as u16,
+            value_size: node_value_size as u32,
             multiplier,
         }
     }

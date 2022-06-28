@@ -9,6 +9,11 @@ pub mod object_size_info;
 use crate::contract::{Contract, Document, DocumentType};
 use crate::drive::config::DriveConfig;
 use crate::drive::defaults::STORAGE_FLAGS_SIZE;
+use crate::drive::object_size_info::KeyInfo::KeySize;
+use crate::drive::object_size_info::KeyValueInfo::KeyValueMaxSize;
+use crate::drive::object_size_info::PathKeyForDeletionElementInfo::{
+    PathFixedSizeKeyForDeletion, PathKeyElementSizeForDeletion, PathKeyForDeletion,
+};
 use crate::error::drive::DriveError;
 use crate::error::query::QueryError;
 use crate::error::Error;
@@ -202,30 +207,38 @@ impl Drive {
     }
 
     pub fn create_root_tree(&self, transaction: TransactionArg) -> Result<(), Error> {
-        self.grove.insert(
-            [],
-            Into::<&[u8; 1]>::into(RootTree::Identities),
-            Element::empty_tree(),
-            transaction,
-        )?;
-        self.grove.insert(
-            [],
-            Into::<&[u8; 1]>::into(RootTree::ContractDocuments),
-            Element::empty_tree(),
-            transaction,
-        )?;
-        self.grove.insert(
-            [],
-            Into::<&[u8; 1]>::into(RootTree::PublicKeyHashesToIdentities),
-            Element::empty_tree(),
-            transaction,
-        )?;
-        self.grove.insert(
-            [],
-            Into::<&[u8; 1]>::into(RootTree::Misc),
-            Element::empty_tree(),
-            transaction,
-        )?;
+        self.grove
+            .insert(
+                [],
+                Into::<&[u8; 1]>::into(RootTree::Identities),
+                Element::empty_tree(),
+                transaction,
+            )
+            .unwrap()?;
+        self.grove
+            .insert(
+                [],
+                Into::<&[u8; 1]>::into(RootTree::ContractDocuments),
+                Element::empty_tree(),
+                transaction,
+            )
+            .unwrap()?;
+        self.grove
+            .insert(
+                [],
+                Into::<&[u8; 1]>::into(RootTree::PublicKeyHashesToIdentities),
+                Element::empty_tree(),
+                transaction,
+            )
+            .unwrap()?;
+        self.grove
+            .insert(
+                [],
+                Into::<&[u8; 1]>::into(RootTree::Misc),
+                Element::empty_tree(),
+                transaction,
+            )
+            .unwrap()?;
         Ok(())
     }
 
@@ -409,7 +422,17 @@ impl Drive {
 
         let storage_flags = StorageFlags { epoch };
 
-        let document_info = DocumentAndSerialization((&document, document_cbor, &storage_flags));
+        let document_info = if apply {
+            DocumentAndSerialization((&document, document_cbor, &storage_flags))
+        } else {
+            let element_size = Element::Item(
+                document_cbor.to_vec(),
+                StorageFlags::to_element_flags(&storage_flags),
+            )
+            .serialized_byte_size();
+
+            DocumentSize(element_size)
+        };
 
         let document_type = contract.document_type_for_name(document_type_name)?;
 
@@ -444,7 +467,17 @@ impl Drive {
 
         let storage_flags = StorageFlags { epoch };
 
-        let document_info = DocumentAndSerialization((&document, document_cbor, &storage_flags));
+        let document_info = if apply {
+            DocumentAndSerialization((&document, document_cbor, &storage_flags))
+        } else {
+            let element_size = Element::Item(
+                document_cbor.to_vec(),
+                StorageFlags::to_element_flags(&storage_flags),
+            )
+            .serialized_byte_size();
+
+            DocumentSize(element_size)
+        };
 
         let document_type = contract.document_type_for_name(document_type_name)?;
 
@@ -536,7 +569,7 @@ impl Drive {
             self.add_document_to_primary_storage(
                 &document_and_contract_info,
                 block_time,
-                override_document,
+                true, // we don't need this check because we have it already during validation
                 transaction,
                 query_operations,
                 drive_operations,
@@ -604,7 +637,11 @@ impl Drive {
                     DriveError::CorruptedContractIndexes("invalid contract indices"),
                 ))?;
 
-                let index_property_key = KeyRef(index_property.name.as_bytes());
+                let index_property_key = if apply {
+                    KeyRef(index_property.name.as_bytes())
+                } else {
+                    KeySize(index_property.name.as_bytes().len())
+                };
 
                 let document_index_field = document_and_contract_info
                     .document_info
@@ -675,7 +712,7 @@ impl Drive {
             // unique indexes will be stored under key "0"
             // non unique indices should have a tree at key "0" that has all elements based off of primary key
             if !index.unique || any_fields_null {
-                let key_path_info = KeyRef(&[0]);
+                let key_path_info = if apply { KeyRef(&[0]) } else { KeySize(1) };
 
                 let path_key_info = key_path_info.add_path_info(index_path_info.clone());
                 // here we are inserting an empty tree that will have a subtree of all other index properties
@@ -1198,8 +1235,8 @@ impl Drive {
             &mut query_operations,
             &mut drive_operations,
         )?;
-        let fees = calculate_fee(None, Some(query_operations), Some(drive_operations))?;
-        Ok(fees)
+        //let fees = calculate_fee(None, Some(query_operations), Some(drive_operations))?;
+        Ok((0, 0))
     }
 
     pub fn delete_document_for_contract_cbor(
@@ -1249,35 +1286,53 @@ impl Drive {
         let contract_documents_primary_key_path =
             contract_documents_primary_key_path(&contract.id, document_type_name);
 
+        let key_value_info = if apply {
+            KeyRefRequest(document_id)
+        } else {
+            KeyValueMaxSize((document_id.len(), document_type.max_size()))
+        };
+
         // next we need to get the document from storage
         let document_element: Option<Element> = self.grove_get(
             contract_documents_primary_key_path,
-            KeyRefRequest(document_id),
+            key_value_info,
             transaction,
             query_operations,
         )?;
 
-        if document_element.is_none() {
-            return Err(Error::Drive(DriveError::DeletingDocumentThatDoesNotExist(
-                "document being deleted does not exist",
-            )));
-        }
+        let document = if apply {
+            if document_element.is_none() {
+                return Err(Error::Drive(DriveError::DeletingDocumentThatDoesNotExist(
+                    "document being deleted does not exist",
+                )));
+            }
 
-        let document_bytes: Vec<u8> = match document_element.unwrap() {
-            Element::Item(data, _) => data,
-            _ => todo!(), // TODO: how should this be handled, possibility that document might not be in storage
+            let document_bytes: Vec<u8> = match document_element.unwrap() {
+                Element::Item(data, _) => data,
+                _ => todo!(), // TODO: how should this be handled, possibility that document might not be in storage
+            };
+
+            Document::from_cbor(document_bytes.as_slice(), None, owner_id)?
+        } else {
+            document_type.random_document(None)
         };
 
-        let document = Document::from_cbor(document_bytes.as_slice(), None, owner_id)?;
+        let path_key_element_info = if apply {
+            PathFixedSizeKeyForDeletion((contract_documents_primary_key_path, document_id))
+        } else {
+            PathKeyElementSizeForDeletion((0, document_id.len(), document_type.max_size()))
+        };
+
+        // self.batch_delete(
+        //     contract_documents_primary_key_path,
+        //     document_id,
+        //     true, // not a tree, irrelevant
+        //     transaction,
+        //     drive_operations,
+        // )?;
 
         // third we need to delete the document for it's primary key
-        self.batch_delete(
-            contract_documents_primary_key_path,
-            document_id,
-            true, // not a tree, irrelevant
-            transaction,
-            drive_operations,
-        )?;
+        self.grove_delete(path_key_element_info, transaction)?;
 
         let contract_document_type_path =
             contract_document_type_path(&contract.id, document_type_name);
@@ -1338,43 +1393,64 @@ impl Drive {
 
             // unique indexes will be stored under key "0"
             // non unique indices should have a tree at key "0" that has all elements based off of primary key
-            if !index.unique {
+            // if !index.unique {
+            //     index_path.push(vec![0]);
+            //
+            //     let index_path_slices: Vec<&[u8]> =
+            //         index_path.iter().map(|x| x.as_slice()).collect();
+            //
+            //     // here we should return an error if the element already exists
+            //     self.batch_delete_up_tree_while_empty(
+            //         index_path_slices,
+            //         document_id,
+            //         Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
+            //         transaction,
+            //         query_operations,
+            //         drive_operations,
+            //     )?;
+            // } else {
+            //     let index_path_slices: Vec<&[u8]> =
+            //         index_path.iter().map(|x| x.as_slice()).collect();
+            //
+            //     // here we should return an error if the element already exists
+            //     self.batch_delete_up_tree_while_empty(
+            //         index_path_slices,
+            //         &[0],
+            //         Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
+            //         transaction,
+            //         query_operations,
+            //         drive_operations,
+            //     )?;
+            // }
+
+            let path_key_element_info = if !index.unique {
                 index_path.push(vec![0]);
 
-                let index_path_slices: Vec<&[u8]> =
-                    index_path.iter().map(|x| x.as_slice()).collect();
-
-                // here we should return an error if the element already exists
-                self.batch_delete_up_tree_while_empty(
-                    index_path_slices,
-                    document_id,
-                    Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
-                    transaction,
-                    query_operations,
-                    drive_operations,
-                )?;
+                if apply {
+                    // This type is not using const N so it can be 0
+                    PathKeyForDeletion::<0>((index_path, document_id))
+                } else {
+                    PathKeyElementSizeForDeletion((index_path.len(), document_id.len(), 0))
+                }
+            } else if apply {
+                PathKeyForDeletion((index_path, &[0]))
             } else {
-                let index_path_slices: Vec<&[u8]> =
-                    index_path.iter().map(|x| x.as_slice()).collect();
+                PathKeyElementSizeForDeletion((index_path.len(), 1, 0))
+            };
 
-                // here we should return an error if the element already exists
-                self.batch_delete_up_tree_while_empty(
-                    index_path_slices,
-                    &[0],
-                    Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
-                    transaction,
-                    query_operations,
-                    drive_operations,
-                )?;
-            }
-        }
-        if apply {
-            self.grove_apply_batch(
-                DriveOperation::grovedb_operations(drive_operations),
-                true,
+            self.grove_delete_up_tree_while_empty(
+                path_key_element_info,
+                Some(CONTRACT_DOCUMENTS_PATH_HEIGHT),
                 transaction,
             )?;
         }
+        // if apply {
+        //     self.grove_apply_batch(
+        //         DriveOperation::grovedb_operations(drive_operations),
+        //         true,
+        //         transaction,
+        //     )?;
+        // }
         Ok(())
     }
 
@@ -1513,11 +1589,12 @@ mod tests {
     };
     use crate::contract::{Contract, Document};
     use crate::drive::flags::StorageFlags;
-    use crate::drive::object_size_info::DocumentInfo::DocumentAndSerialization;
+    use crate::drive::object_size_info::DocumentInfo::{DocumentAndSerialization, DocumentSize};
     use crate::drive::object_size_info::{DocumentAndContractInfo, DocumentInfo};
     use crate::drive::{defaults, Drive};
     use crate::fee::op::{DriveOperation, QueryOperation};
     use crate::query::DriveQuery;
+    use grovedb::Element;
     use rand::Rng;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1686,7 +1763,7 @@ mod tests {
         );
 
         let random_owner_id = rand::thread_rng().gen::<[u8; 32]>();
-        let (storage_fee, processing_fee) = drive
+        let (predicted_storage_fee, predicted_processing_fee) = drive
             .add_document_cbor_for_contract(
                 &dashpay_cr_document_cbor,
                 &contract,
@@ -1712,8 +1789,8 @@ mod tests {
             )
             .expect("expected to insert a document successfully");
 
-        assert_eq!(storage_fee, actual_storage_fee);
-        assert_eq!(processing_fee, actual_processing_fee);
+        assert!(predicted_storage_fee >= actual_storage_fee);
+        assert!(predicted_processing_fee >= actual_processing_fee);
     }
 
     #[test]
@@ -1745,8 +1822,13 @@ mod tests {
 
         let storage_flags = StorageFlags { epoch: 0 };
 
-        let document_info =
-            DocumentAndSerialization((&document, &dashpay_cr_document_cbor, &storage_flags));
+        let document_size = Element::Item(
+            dashpay_cr_document_cbor,
+            StorageFlags::to_element_flags(&storage_flags),
+        )
+        .serialized_byte_size();
+
+        let document_info = DocumentSize(document_size);
 
         let document_type = contract
             .document_type_for_name("contactRequest")
@@ -1759,6 +1841,7 @@ mod tests {
         let root_hash = drive
             .grove
             .root_hash(Some(&db_transaction))
+            .unwrap()
             .expect("expected a root hash calculation to succeed")
             .expect("expected a root hash");
 
@@ -1782,6 +1865,7 @@ mod tests {
         let root_hash_after_fee = drive
             .grove
             .root_hash(Some(&db_transaction))
+            .unwrap()
             .expect("expected a root hash calculation to succeed")
             .expect("expected a root hash");
 
@@ -3419,6 +3503,230 @@ mod tests {
                 None,
             )
             .expect("should delete document");
+    }
+
+    #[test]
+    fn test_create_update_and_delete_document_without_apply() {
+        let tmp_dir = TempDir::new().unwrap();
+        let drive: Drive = Drive::open(tmp_dir).expect("expected to open Drive successfully");
+
+        drive
+            .create_root_tree(None)
+            .expect("should create root tree");
+
+        let contract = json!({
+            "protocolVersion": 1,
+            "$id": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+            "$schema": "https://schema.dash.org/dpp-0-4-0/meta/data-contract",
+            "version": 1,
+            "ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+            "documents": {
+                "indexedDocument": {
+                    "type": "object",
+                    "indices": [
+                        {"name":"index1", "properties": [{"$ownerId":"asc"}, {"firstName":"desc"}], "unique":true},
+                        {"name":"index2", "properties": [{"$ownerId":"asc"}, {"lastName":"desc"}], "unique":true},
+                        {"name":"index3", "properties": [{"lastName":"asc"}]},
+                        {"name":"index4", "properties": [{"$createdAt":"asc"}, {"$updatedAt":"asc"}]},
+                        {"name":"index5", "properties": [{"$updatedAt":"asc"}]},
+                        {"name":"index6", "properties": [{"$createdAt":"asc"}]}
+                    ],
+                    "properties":{
+                        "firstName": {
+                            "type": "string",
+                            "maxLength": 63,
+                        },
+                        "lastName": {
+                            "type": "string",
+                            "maxLength": 63,
+                        }
+                    },
+                    "required": ["firstName", "$createdAt", "$updatedAt", "lastName"],
+                    "additionalProperties": false,
+                },
+            },
+        });
+
+        let contract = value_to_cbor(contract, Some(defaults::PROTOCOL_VERSION));
+
+        drive
+            .apply_contract_cbor(contract.clone(), None, 0f64, true, None)
+            .expect("should create a contract");
+
+        // Create document with apply
+
+        let document = json!({
+           "$protocolVersion": 1,
+           "$id": "DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN",
+           "$type": "indexedDocument",
+           "$dataContractId": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+           "$ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+           "$revision": 1,
+           "firstName": "myName",
+           "lastName": "lastName",
+           "$createdAt":1647535750329 as u64,
+           "$updatedAt":1647535750329 as u64,
+        });
+
+        let document_cbor = value_to_cbor(document, Some(defaults::PROTOCOL_VERSION));
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .add_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                false,
+                0f64,
+                true,
+                None,
+            )
+            .expect("should add document");
+
+        // Create document without apply
+
+        let initial_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .add_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                false,
+                0f64,
+                false,
+                None,
+            )
+            .expect("should add document");
+
+        let final_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        assert_eq!(initial_root_hash, final_root_hash);
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
+
+        // Update document with apply
+
+        let document = json!({
+           "$protocolVersion": 1,
+           "$id": "DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN",
+           "$type": "indexedDocument",
+           "$dataContractId": "BZUodcFoFL6KvnonehrnMVggTvCe8W5MiRnZuqLb6M54",
+           "$ownerId": "GZVdTnLFAN2yE9rLeCHBDBCr7YQgmXJuoExkY347j7Z5",
+           "$revision": 2,
+           "firstName": "updatedName",
+           "lastName": "lastName",
+           "$createdAt":1647535750329 as u64,
+           "$updatedAt":1647535754556 as u64,
+        });
+
+        let document_cbor = value_to_cbor(document, Some(defaults::PROTOCOL_VERSION));
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .update_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                0f64,
+                true,
+                None,
+            )
+            .expect("should update document");
+
+        // Update document without apply
+
+        let initial_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .update_document_for_contract_cbor(
+                document_cbor.as_slice(),
+                &contract.as_slice(),
+                "indexedDocument",
+                None,
+                0f64,
+                false,
+                None,
+            )
+            .expect("should update document");
+
+        let final_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        assert_eq!(initial_root_hash, final_root_hash);
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
+
+        // Delete document with apply
+
+        let document_id = bs58::decode("DLRWw2eRbLAW5zDU2c7wwsSFQypTSZPhFYzpY48tnaXN")
+            .into_vec()
+            .expect("should decode base58");
+
+        let (actual_storage_cost, actual_processing_cost) = drive
+            .delete_document_for_contract_cbor(
+                document_id.as_slice(),
+                &contract,
+                "indexedDocument",
+                None,
+                true,
+                None,
+            )
+            .expect("should delete document");
+
+        // Delete document without apply
+
+        let initial_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        let (predicted_storage_cost, predicted_processing_cost) = drive
+            .delete_document_for_contract_cbor(
+                document_id.as_slice(),
+                &contract,
+                "indexedDocument",
+                None,
+                false,
+                None,
+            )
+            .expect("should delete document");
+
+        let final_root_hash = drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("expected a root hash calculation to succeed")
+            .expect("expected a root hash");
+
+        assert_eq!(initial_root_hash, final_root_hash);
+
+        assert!(actual_storage_cost <= predicted_storage_cost);
+        assert!(actual_processing_cost <= predicted_processing_cost);
     }
 
     #[test]

@@ -453,6 +453,7 @@ fn test_family_basic_queries() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -1617,6 +1618,7 @@ fn test_family_basic_queries() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -1636,6 +1638,7 @@ fn test_family_starts_at_queries() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2012,6 +2015,7 @@ fn test_family_with_nulls_query() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2122,6 +2126,7 @@ fn test_query_with_cached_contract() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2187,6 +2192,7 @@ fn test_dpns_query() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2615,7 +2621,11 @@ fn test_dpns_insertion_no_aliases() {
         )
         .expect("query should be executed");
     assert_eq!(
-        drive.grove.root_hash(None).expect("should get root hash"),
+        drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("should get root hash"),
         Some(proof_root_hash)
     );
     assert_eq!(result.0, proof_results);
@@ -2660,7 +2670,11 @@ fn test_dpns_insertion_with_aliases() {
         )
         .expect("query should be executed");
     assert_eq!(
-        drive.grove.root_hash(None).expect("should get root hash"),
+        drive
+            .grove
+            .root_hash(None)
+            .unwrap()
+            .expect("should get root hash"),
         Some(proof_root_hash)
     );
     assert_eq!(result.0, proof_results);
@@ -2676,6 +2690,7 @@ fn test_dpns_query_start_at() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2761,6 +2776,7 @@ fn test_dpns_query_start_after() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2846,6 +2862,7 @@ fn test_dpns_query_start_at_desc() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -2931,6 +2948,7 @@ fn test_dpns_query_start_after_desc() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -3113,6 +3131,7 @@ fn test_dpns_query_start_at_with_null_id() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -3304,6 +3323,7 @@ fn test_dpns_query_start_after_with_null_id() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),
@@ -3497,6 +3517,7 @@ fn test_dpns_query_start_after_with_null_id_desc() {
     let root_hash = drive
         .grove
         .root_hash(Some(&db_transaction))
+        .unwrap()
         .expect("there is always a root hash");
     assert_eq!(
         root_hash.expect("cannot get root hash").as_slice(),

@@ -384,3 +384,12 @@ impl<'a> KeyValueInfo<'a> {
         }
     }
 }
+
+pub enum PathKeyForDeletionElementInfo<'a, const N: usize> {
+    /// A triple Path Key and Element
+    PathFixedSizeKeyForDeletion(([&'a [u8]; N], &'a [u8])),
+    /// A triple Path Key and Element
+    PathKeyForDeletion((Vec<Vec<u8>>, &'a [u8])),
+    /// A triple of sum of Path lengths, Key length and Element size
+    PathKeyElementSizeForDeletion((usize, usize, usize)),
+}

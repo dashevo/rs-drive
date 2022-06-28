@@ -394,7 +394,8 @@ impl Drive {
     ) -> Result<(Option<Arc<Contract>>, StorageFlags), Error> {
         let stored_element = self
             .grove
-            .get(contract_root_path(&contract_id), &[0], transaction)?;
+            .get(contract_root_path(&contract_id), &[0], transaction)
+            .unwrap()?;
         if let Element::Item(stored_contract_bytes, element_flag) = stored_element {
             let contract = Arc::new(Contract::from_cbor(&stored_contract_bytes, None)?);
             let cached_contracts = self.cached_contracts.borrow();
@@ -595,7 +596,7 @@ mod tests {
                 },
                 false,
                 0f64,
-                false,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
@@ -632,7 +633,7 @@ mod tests {
                 },
                 false,
                 0f64,
-                false,
+                true,
                 None,
             )
             .expect("expected to insert a document successfully");
